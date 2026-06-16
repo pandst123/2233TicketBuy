@@ -13,7 +13,7 @@ if errorlevel 1 (
 )
 
 echo [2/3] Building...
-pyinstaller --clean 2233TicketBuy.spec
+python -m PyInstaller --clean 2233TicketBuy.spec
 
 echo [3/3] Done!
 echo.
