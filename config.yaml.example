@@ -1,0 +1,95 @@
+# 2233ticketbuy - B站抢票工具配置文件
+# 使用说明：复制此文件为 config.yaml，然后填入你的信息
+
+# 用户配置
+user:
+  # 登录后自动获取，无需手动填写
+  sessdata: ""
+  bili_jct: ""
+  dede_user_id: ""
+  dede_user_id_ckmd5: ""
+
+# 活动配置
+event:
+  # 活动ID（从URL获取）
+  # 例如：https://show.bilibili.com/platform/detail.html?id=12345
+  project_id: 0
+  
+  # 场次ID（登录后查询获取）
+  screen_id: 0
+  
+  # 票档ID（登录后查询获取）
+  sku_id: 0
+  
+  # 购票数量
+  count: 1
+  
+  # 观演人信息ID（实名制票需要）
+  viewer_id: 0
+
+# 策略配置
+strategy:
+  # 重试次数
+  retry_count: 3
+  
+  # 重试间隔（毫秒）
+  retry_delay_ms: 100
+  
+  # 并发请求数
+  concurrency: 1
+  
+  # 提前开始时间（毫秒）
+  # 在开售前多少毫秒开始发送请求
+  advance_ms: 500
+  
+  # 请求超时（秒）
+  timeout_seconds: 10
+
+# 观演人配置（从B站API自动获取，也可手动配置）
+# 用于实名制购票，登录后会自动从B站获取观演人列表
+viewers:
+  # 示例：
+  # - name: "张三"
+  #   tel: "13800138000"
+  #   id: 123456
+  #   personal_id: "310101199001011234"
+  #   id_type: 0
+
+# 代理配置（可选）
+proxy:
+  enabled: false
+  # HTTP代理地址
+  http: ""
+  # HTTPS代理地址
+  https: ""
+  # SOCKS5代理地址
+  socks5: ""
+
+# 日志配置
+logging:
+  # 日志级别：DEBUG, INFO, WARNING, ERROR
+  level: INFO
+  
+  # 是否保存到文件
+  save_to_file: true
+  
+  # 日志文件路径
+  file_path: "logs/ticket_grabber.log"
+  
+  # 是否显示详细信息
+  verbose: false
+
+# 通知配置（可选）
+notification:
+  # 是否启用通知
+  enabled: false
+  
+  # Server酱推送（可选）
+  serverchan:
+    enabled: false
+    key: ""
+  
+  # 钉钉机器人（可选）
+  dingtalk:
+    enabled: false
+    webhook: ""

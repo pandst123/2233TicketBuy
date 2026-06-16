@@ -1,0 +1,550 @@
+"""
+2233TicketBuy - B站抢票工具主入口
+参考biliTickerBuy的主程序逻辑
+"""
+
+import sys
+import os
+import argparse
+import time
+from pathlib import Path
+from datetime import datetime
+
+if getattr(sys, 'frozen', False):
+    BASE_DIR = Path(sys._MEIPASS)
+else:
+    BASE_DIR = Path(__file__).parent
+
+sys.path.insert(0, str(BASE_DIR / 'src'))
+
+from src.config import ConfigManager, Config
+from src.qrcode_login import login_interactive
+from src.api_client import create_api_client
+from src.ticket_grabber import TicketGrabber, grab_ticket_interactive
+from src.monitor import TicketMonitor
+
+
+def print_banner():
+    print("""
+   ____   ____  ____ __________  __  _   __   ____
+  / __ \\ / __ \\/ __ /_  __/ __ \\/ / / / | / /  / __ \\__  ______  ___
+ / / / // / / / /_/ / / / / / / / / / /  |/ /  / /_/ / / / / __ \\/ _ \\
+/ /_/ // /_/ / /_/ / / / / /_/ / /_/ / /|  /  / ____/ /_/ / /_/ /  __/
+\\____/ \\____/\\__, / /_/  \\____/\\____/_/ |_/  /_/    \\__,_/ .___/\\___/
+            /____/    2233TicketBuy v1.0                   /_/
+""")
+
+
+def login(config_manager):
+    print("\n" + "-" * 50)
+    print("  步骤 1 : 登录B站账号")
+    print("-" * 50)
+    
+    result = login_interactive()
+    
+    if not result.success:
+        print(f"\n登录失败: {result.message}")
+        return config_manager.config or config_manager.get_default_config()
+    
+    config = config_manager.config or config_manager.get_default_config()
+    config.user.sessdata = result.sessdata
+    config.user.bili_jct = result.bili_jct
+    config.user.dede_user_id = result.dede_user_id
+    config.user.dede_user_id_ckmd5 = result.dede_user_id_ckmd5
+    
+    config_manager.save(config)
+    print("\n登录信息已保存到配置文件")
+    
+    return config
+
+
+def get_ticket_status_desc(sku):
+    """获取票档状态描述"""
+    # clickable是主要判断依据
+    clickable = sku.get("clickable", None)
+    
+    # 检查stock字段
+    stock = sku.get("stock", None)
+    count = -1
+    if isinstance(stock, dict):
+        count = stock.get("count", -1)
+    elif isinstance(stock, (int, float)):
+        count = int(stock)
+    
+    # 检查sale_start字段
+    sale_start = sku.get("sale_start", "")
+    
+    # 判断状态
+    if clickable is False:
+        # 不可点击，可能是未开售或已售罄
+        if count == 0:
+            return "已售罄"
+        elif sale_start:
+            return f"未开售({sale_start}开售)"
+        else:
+            return "未开售"
+    elif clickable is True:
+        # 可点击，可以购买
+        if count == 0:
+            return "已售罄"
+        elif count > 0:
+            return f"可购买(余{count})"
+        else:
+            return "可购买"
+    else:
+        # clickable为None，尝试其他判断
+        if count == 0:
+            return "已售罄"
+        elif count > 0:
+            return f"可购买(余{count})"
+        else:
+            return "未知状态"
+
+
+def get_viewers(api):
+    """获取观演人列表（使用 nomask=1 获取真实手机号，对齐 BHYG）"""
+    try:
+        # BHYG: https://show.bilibili.com/api/ticket/buyer/list?nomask=1
+        url = "https://show.bilibili.com/api/ticket/buyer/list?nomask=1"
+        with api._create_client() as client:
+            response = client.get(url, headers=api.DEFAULT_HEADERS, cookies=api.cookies)
+            result = response.json()
+            errno = result.get("errno", -1)
+            if errno == 0:
+                data = result.get("data", {})
+                if isinstance(data, dict):
+                    viewer_list = data.get("list", [])
+                    # 保存到缓存文件，下次直接抢票时可用
+                    _save_viewers_cache(viewer_list)
+                    return viewer_list
+                else:
+                    return []
+            else:
+                msg = result.get("msg", "")
+                if msg:
+                    print(f"获取观演人列表: {msg}")
+    except Exception as e:
+        print(f"获取观演人列表失败: {e}")
+    return []
+
+
+# viewers 缓存文件路径
+VIEWERS_CACHE_FILE = "viewers_cache.json"
+
+
+def _save_viewers_cache(viewers: list):
+    """保存观演人列表到本地缓存（含真实手机号）"""
+    try:
+        import json
+        with open(VIEWERS_CACHE_FILE, "w", encoding="utf-8") as f:
+            json.dump(viewers, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+
+def _load_viewers_cache() -> list:
+    """从本地缓存加载观演人列表"""
+    try:
+        import json
+        with open(VIEWERS_CACHE_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return []
+
+
+def select_viewers(api, count):
+    """选择观演人"""
+    print("\n" + "-" * 50)
+    print("  选择购票人")
+    print("-" * 50)
+    
+    viewers = get_viewers(api)
+    
+    if not viewers:
+        print("\n未找到观演人信息")
+        print("请先在B站APP或网页端添加观演人")
+        input_id = input("\n请输入观演人ID（如果不需要实名制可直接回车）: ").strip()
+        if input_id:
+            return [int(input_id)]
+        return []
+    
+    print("\n可用观演人:")
+    for i, viewer in enumerate(viewers, 1):
+        name = viewer.get("name", "未知")
+        id_card = viewer.get("personal_id", viewer.get("id_card", ""))
+        tel = viewer.get("tel", "")
+        # 显示完整姓名和身份证号（已通过 nomask=1 获取真实数据）
+        print(f"  {i}. {name}  {tel}  {id_card}")
+    
+    selected = []
+    for i in range(count):
+        while True:
+            try:
+                choice = input(f"\n请选择第{i+1}个观演人（输入序号）: ").strip()
+                if not choice:
+                    break
+                idx = int(choice) - 1
+                if 0 <= idx < len(viewers):
+                    selected.append(viewers[idx])
+                    break
+                else:
+                    print("序号超出范围")
+            except ValueError:
+                print("请输入有效的数字")
+    
+    return selected
+
+
+def select_event(config, api):
+    """选择活动"""
+    print("\n" + "-" * 50)
+    print("  步骤 2 : 选择活动")
+    print("-" * 50)
+    
+    while True:
+        try:
+            project_id = int(input("\n请输入活动ID（从URL获取）: "))
+            if project_id <= 0:
+                print("活动ID必须大于0")
+                continue
+            break
+        except ValueError:
+            print("请输入有效的数字")
+    
+    try:
+        project = api.get_project_info(project_id)
+        
+        # 显示活动信息
+        print(f"\n活动名称: {project.name}")
+        print(f"开售时间: {datetime.fromtimestamp(project.sale_begin).strftime('%Y-%m-%d %H:%M:%S')}")
+        
+        # 检查是否已开售
+        now = time.time()
+        if project.sale_begin > 0:
+            if now < project.sale_begin:
+                print("状态: 未开售")
+            else:
+                print("状态: 已开售")
+        
+        # 显示场次列表
+        print("\n可用场次:")
+        for i, screen in enumerate(project.screens, 1):
+            print(f"  {i}. {screen.get('name', '未知')}")
+        
+        # 选择场次
+        while True:
+            try:
+                screen_index = int(input("\n请选择场次（输入序号）: ")) - 1
+                if 0 <= screen_index < len(project.screens):
+                    screen = project.screens[screen_index]
+                    break
+                else:
+                    print("序号超出范围")
+            except ValueError:
+                print("请输入有效的数字")
+        
+        # 显示票档列表（带状态）
+        print(f"\n场次: {screen.get('name', '未知')}")
+        print("\n可用票档:")
+        ticket_list = screen.get("ticket_list", [])
+        for i, sku in enumerate(ticket_list, 1):
+            desc = sku.get("desc", "未知")
+            price = sku.get("price", 0) / 100
+            status_desc = get_ticket_status_desc(sku)
+            print(f"  {i}. {desc}: ¥{price} [{status_desc}]")
+        
+        # 选择票档
+        while True:
+            try:
+                sku_index = int(input("\n请选择票档（输入序号）: ")) - 1
+                if 0 <= sku_index < len(ticket_list):
+                    sku = ticket_list[sku_index]
+                    # 检查票档状态
+                    status_desc = get_ticket_status_desc(sku)
+                    if "已售罄" in status_desc:
+                        print("该票档已售罄，请选择其他票档")
+                        continue
+                    break
+                else:
+                    print("序号超出范围")
+            except ValueError:
+                print("请输入有效的数字")
+        
+        # 获取购票数量
+        while True:
+            try:
+                count = int(input("\n请输入购票数量: "))
+                if count <= 0:
+                    print("购票数量必须大于0")
+                    continue
+                break
+            except ValueError:
+                print("请输入有效的数字")
+        
+        # 选择购票人（所有票都可以选择购票人）
+        viewers = select_viewers(api, count)
+        if viewers:
+            _save_viewers_cache(viewers)
+        
+        # 更新配置
+        config.event.project_id = project_id
+        config.event.screen_id = screen["id"]
+        config.event.sku_id = sku["id"]
+        config.event.count = count
+        
+        # 显示选择摘要
+        print("\n" + "-" * 50)
+        print("  选择摘要")
+        print("-" * 50)
+        print(f"活动: {project.name}")
+        print(f"场次: {screen.get('name', '未知')}")
+        print(f"票档: {sku.get('desc', '未知')}")
+        print(f"数量: {count}")
+        print(f"单价: ¥{sku.get('price', 0) / 100}")
+        print(f"总价: ¥{sku.get('price', 0) * count / 100}")
+        print(f"状态: {get_ticket_status_desc(sku)}")
+        if viewers:
+            print(f"观演人: {', '.join([v.get('name', '未知') for v in viewers])}")
+        
+        return config, viewers
+        
+    except Exception as e:
+        print(f"\n获取活动信息失败: {e}")
+        return config, []
+
+
+def show_config(config):
+    """显示当前配置"""
+    print("\n" + "-" * 50)
+    print("  当前配置")
+    print("-" * 50)
+    
+    print(f"用户ID: {config.user.dede_user_id or '未设置'}")
+    print(f"活动ID: {config.event.project_id if config.event.project_id > 0 else '未设置'}")
+    print(f"场次ID: {config.event.screen_id if config.event.screen_id > 0 else '未设置'}")
+    print(f"票档ID: {config.event.sku_id if config.event.sku_id > 0 else '未设置'}")
+    print(f"购票数量: {config.event.count}")
+    print(f"并发数: {config.strategy.concurrency}")
+    print(f"请求超时: {config.strategy.timeout_seconds}s")
+
+
+def confirm_and_grab(config, api, viewers=None):
+    """确认信息并开始抢票"""
+    print("\n" + "-" * 50)
+    print("  步骤 3 : 确认信息")
+    print("-" * 50)
+    
+    # 获取完整信息
+    try:
+        project = api.get_project_info(config.event.project_id)
+        
+        # 查找场次
+        screen_name = "未知"
+        screen_data = None
+        for s in project.screens:
+            if s["id"] == config.event.screen_id:
+                screen_name = s.get("name", "未知")
+                screen_data = s
+                break
+        
+        # 查找票档
+        sku_name = "未知"
+        sku_price = 0
+        sku_status = "未知"
+        if screen_data:
+            for sku in screen_data.get("ticket_list", []):
+                if sku["id"] == config.event.sku_id:
+                    sku_name = sku.get("desc", "未知")
+                    sku_price = sku.get("price", 0) / 100
+                    sku_status = get_ticket_status_desc(sku)
+                    break
+        
+        print(f"\n活动: {project.name}")
+        print(f"场次: {screen_name}")
+        print(f"票档: {sku_name} (¥{sku_price})")
+        print(f"状态: {sku_status}")
+        print(f"数量: {config.event.count}")
+        print(f"总价: ¥{sku_price * config.event.count}")
+        
+        if viewers:
+            print(f"观演人: {', '.join([v.get('name', '未知') for v in viewers])}")
+        
+        # 显示开售时间
+        if project.sale_begin > 0:
+            sale_time = datetime.fromtimestamp(project.sale_begin).strftime('%Y-%m-%d %H:%M:%S')
+            print(f"\n开售时间: {sale_time}")
+            
+            now = time.time()
+            if now < project.sale_begin:
+                remaining = project.sale_begin - now
+                hours = int(remaining // 3600)
+                minutes = int((remaining % 3600) // 60)
+                print(f"距离开售: {hours}小时{minutes}分钟")
+            else:
+                print("状态: 已开售")
+        
+    except Exception as e:
+        print(f"\n获取活动信息失败: {e}")
+        print(f"活动ID: {config.event.project_id}")
+        print(f"场次ID: {config.event.screen_id}")
+        print(f"票档ID: {config.event.sku_id}")
+        print(f"数量: {config.event.count}")
+    
+    confirm = input("\n确认以上信息正确？(y/n): ").strip().lower()
+    if confirm != "y":
+        print("已取消")
+        return
+    
+    # 开始抢票
+    print("\n" + "-" * 50)
+    print("  步骤 4 : 开始抢票")
+    print("-" * 50)
+    
+    result = grab_ticket_interactive(config, viewers=viewers)
+    
+    print("\n" + "-" * 50)
+    if result.success:
+        print("[OK] 抢票成功！")
+        print(f"订单ID: {result.order_id}")
+        print("请尽快完成支付！")
+    else:
+        print("[FAIL] 抢票失败")
+        print(f"原因: {result.message}")
+    print("-" * 50)
+
+
+def main():
+    """主函数"""
+    parser = argparse.ArgumentParser(
+        description="2233TicketBuy - B站抢票工具",
+        epilog="""
+示例:
+  python main.py              # 交互模式
+  python main.py --login      # 仅登录
+  python main.py --grab       # 直接抢票
+        """
+    )
+    parser.add_argument('-c', '--config', default='config.yaml', help='配置文件路径')
+    parser.add_argument('--login', action='store_true', help='仅执行登录')
+    parser.add_argument('--grab', action='store_true', help='直接开始抢票')
+    parser.add_argument('--create-example', action='store_true', help='创建示例配置文件')
+    
+    args = parser.parse_args()
+    
+    print_banner()
+    
+    config_manager = ConfigManager(args.config)
+    
+    if args.create_example:
+        config_manager.create_example_config()
+        print("示例配置文件已创建")
+        return
+    
+    try:
+        config = config_manager.load()
+    except FileNotFoundError:
+        print(f"配置文件不存在: {args.config}")
+        print("将使用默认配置")
+        config = config_manager.get_default_config()
+    
+    if args.login:
+        login(config_manager)
+        return
+    
+    api = create_api_client(config)
+    
+    if args.grab:
+        if not config.user.sessdata:
+            print("\n未登录，请先登录")
+            config = login(config_manager)
+        
+        api = create_api_client(config)
+        if not api.check_login():
+            print("\n登录已过期，请重新登录")
+            config = login(config_manager)
+            api = create_api_client(config)
+        
+        # 从缓存加载观演人
+        viewers = _load_viewers_cache()
+        if not viewers:
+            print("\n未找到购票人缓存，请先交互模式选择活动")
+            return
+        
+        confirm_and_grab(config, api, viewers)
+        return
+    
+    # 交互模式
+    viewers = []
+    while True:
+        print("\n" + "-" * 50)
+        print("  主菜单")
+        print("-" * 50)
+        print("  1. 登录B站账号")
+        print("  2. 选择活动")
+        print("  3. 开始抢票")
+        print("  4. 查看配置")
+        print("  5. 退出")
+        print()
+        
+        choice = input("请选择操作: ").strip()
+        
+        if choice == "1":
+            config = login(config_manager)
+        elif choice == "2":
+            if not config.user.sessdata:
+                print("\n请先登录！")
+                continue
+            
+            api = create_api_client(config)
+            if not api.check_login():
+                print("\n登录已过期，请重新登录")
+                config = login(config_manager)
+                continue
+            
+            config, viewers = select_event(config, api)
+            config_manager.save(config)
+            print("\n配置已保存")
+            
+        elif choice == "3":
+            if config.event.project_id <= 0:
+                print("\n请先选择活动！")
+                continue
+            
+            # 确保使用最新的配置创建 API 客户端
+            api = create_api_client(config)
+            if not api.check_login():
+                print("\n登录已过期，请重新登录")
+                config = login(config_manager)
+                api = create_api_client(config)
+                if not api.check_login():
+                    continue
+            
+            # 如果没有当前选择的观演人，尝试从缓存加载
+            if not viewers:
+                viewers = _load_viewers_cache()
+                if viewers:
+                    print(f"\n从缓存加载了 {len(viewers)} 个观演人")
+                else:
+                    print("\n未找到购票人信息，请先执行「选择活动」")
+                    continue
+            
+            confirm_and_grab(config, api, viewers)
+            
+        elif choice == "4":
+            show_config(config)
+            
+        elif choice == "5":
+            print("\n再见！")
+            break
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except KeyboardInterrupt:
+        print("\n\n用户取消操作")
+    except Exception as e:
+        print(f"\n发生错误: {e}")
+    finally:
+        if getattr(sys, 'frozen', False):
+            input("\n按回车键退出...")
