@@ -104,6 +104,7 @@ class QRCodeLogin:
         if show_window:
             try:
                 img = qr.make_image(fill_color="black", back_color="white")
+                img = img.resize((img.width * 8, img.height * 8))
                 img.show()
             except Exception:
                 pass

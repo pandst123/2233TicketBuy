@@ -61,19 +61,11 @@ class GaiaVerifier:
             "Content-Type": "application/x-www-form-urlencoded",
         }
     
-    def register(self, v_voucher: str) -> Tuple[bool, Dict]:
+    def register(self, risk_params) -> Tuple[bool, Dict]:
         """
-        注册验证
-        
-        Args:
-            v_voucher: 验证凭证
-            
-        Returns:
-            (是否成功, 响应数据)
+        注册风控验证（对标 BHYG: 直接传 riskParams dict）
         """
-        data = {
-            "v_voucher": v_voucher,
-        }
+        data = risk_params if isinstance(risk_params, dict) else {"v_voucher": risk_params}
         
         with httpx.Client() as client:
             response = client.post(
@@ -82,13 +74,25 @@ class GaiaVerifier:
                 headers=self.headers,
                 cookies=self.cookies,
             )
-            
             result = response.json()
-            
             if result.get("code") == 0:
                 return True, result["data"]
-            else:
-                return False, result
+            return False, result
+
+    def validate_direct(self, token: str, csrf: str) -> Tuple[bool, Dict]:
+        """empty 类型直接验证（token + csrf）"""
+        data = {"token": token, "csrf": csrf}
+        with httpx.Client() as client:
+            response = client.post(
+                self.VALIDATE_URL,
+                data=data,
+                headers=self.headers,
+                cookies=self.cookies,
+            )
+            result = response.json()
+            if result.get("code") == 0:
+                return True, result.get("data", {})
+            return False, result
     
     def validate(
         self,

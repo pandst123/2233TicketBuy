@@ -38,6 +38,9 @@ class StrategyConfig:
     concurrency: int = 1
     advance_ms: int = 500
     timeout_seconds: int = 10
+    after_sale_begin_delay: float = 0.3
+    order_interval: float = 0.3
+    delta: float = 0.05
 
 
 @dataclass

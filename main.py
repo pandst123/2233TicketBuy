@@ -9,6 +9,13 @@ import argparse
 import time
 from pathlib import Path
 from datetime import datetime
+from rich.console import Console
+from rich.panel import Panel
+from rich.table import Table
+from rich.text import Text
+from rich import print as rprint
+
+console = Console()
 
 if getattr(sys, 'frozen', False):
     BASE_DIR = Path(getattr(sys, '_MEIPASS', ''))
@@ -25,20 +32,18 @@ from src.monitor import TicketMonitor
 
 
 def print_banner():
-    print("""
-   ____   ____  ____ __________  __  _   __   ____
-  / __ \\ / __ \\/ __ /_  __/ __ \\/ / / / | / /  / __ \\__  ______  ___
- / / / // / / / /_/ / / / / / / / / / /  |/ /  / /_/ / / / / __ \\/ _ \\
-/ /_/ // /_/ / /_/ / / / / /_/ / /_/ / /|  /  / ____/ /_/ / /_/ /  __/
-\\____/ \\____/\\__, / /_/  \\____/\\____/_/ |_/  /_/    \\__,_/ .___/\\___/
-            /____/    2233TicketBuy v1.0                   /_/
-""")
+    console.print()
+    console.print(Panel.fit(
+        "[bold cyan]2233TicketBuy[/bold cyan] [dim]— B站会员购抢票工具[/dim]",
+        border_style="cyan",
+        subtitle="[dim]纯本地运行 · 仅供学习研究[/dim]"
+    ))
+    console.print()
 
 
 def login(config_manager):
-    print("\n" + "-" * 50)
-    print("  步骤 1 : 登录B站账号")
-    print("-" * 50)
+    console.print("[bold cyan]  步骤 1 : 登录B站账号[/bold cyan]")
+    console.print("─" * 50)
     
     result = login_interactive()
     
@@ -197,9 +202,8 @@ def select_viewers(api, count):
 
 def select_event(config, api):
     """选择活动"""
-    print("\n" + "-" * 50)
-    print("  步骤 2 : 选择活动")
-    print("-" * 50)
+    console.print("\n[bold cyan]  步骤 2 : 选择活动[/bold cyan]")
+    console.print("─" * 50)
     print("\n  热门活动参考:")
     print("    上海·BILIBILI MACRO LINK-PLAY! 2026 : 1001701")
     print("    上海·BilibiliWorld 2026           : 1001653")
@@ -321,10 +325,47 @@ def select_event(config, api):
 
 
 def show_config(config, api=None):
-    """显示当前配置（BHYG 风格详细信息）"""
-    print("\n" + "=" * 50)
-    print("  当前运行配置")
-    print("=" * 50)
+    """显示当前配置"""
+    console.print()
+    console.print(Panel.fit("[bold]当前运行配置[/bold]", border_style="blue"))
+    """参数微调（BHYG 风格警告）"""
+    console.print()
+    console.print(Panel.fit(
+        "[bold yellow]⚠ 参数微调[/bold yellow]\n\n"
+        "[dim]这些参数影响抢票策略，[/dim][bold red]绝大多数情况下不需要修改[/bold red][dim]。\n"
+        "不当修改可能导致风控概率增加或抢票失败。[/dim]",
+        border_style="yellow"
+    ))
+    console.print(f"  [cyan]1.[/cyan] 开售延迟    : [bold]{config.strategy.after_sale_begin_delay}s[/bold] (开售后延迟N秒开始)")
+    console.print(f"  [cyan]2.[/cyan] 下单间隔    : [bold]{getattr(config.strategy, 'order_interval', 0.3)}s[/bold] (每次下单间隔)")
+    console.print(f"  [cyan]3.[/cyan] 速率偏差    : [bold]{getattr(config.strategy, 'delta', 0.05)}s[/bold] (智能间隔微调)")
+    console.print(f"  [cyan]4.[/cyan] 提前开始    : [bold]{config.strategy.advance_ms}ms[/bold]")
+    console.print(f"  [cyan]0.[/cyan] 返回")
+    console.print()
+    
+    c = input("选择参数 (0-4): ").strip()
+    try:
+        if c == "1":
+            v = float(input("开售延迟(秒, 默认0.3): ") or "0.3")
+            config.strategy.after_sale_begin_delay = v
+        elif c == "2":
+            v = float(input("下单间隔(秒, 默认0.3): ") or "0.3")
+            config.strategy.order_interval = v
+        elif c == "3":
+            v = float(input("速率偏差(秒, 默认0.05): ") or "0.05")
+            config.strategy.delta = v
+        elif c == "4":
+            v = int(input("提前开始(毫秒, 默认500): ") or "500")
+            config.strategy.advance_ms = v
+        else:
+            return
+        config_manager.save(config)
+        console.print("[green]已保存[/green]")
+    except ValueError:
+        console.print("[red]无效输入[/red]")
+    """显示当前配置"""
+    console.print()
+    console.print(Panel.fit("[bold]当前运行配置[/bold]", border_style="blue"))
     
     # ── 登录信息 ──
     uid = config.user.dede_user_id or "未设置"
@@ -419,6 +460,9 @@ def show_config(config, api=None):
     # ── 策略配置 ──
     print(f"\n  [策略配置]")
     print(f"    提前开始   : {config.strategy.advance_ms}ms")
+    print(f"    开售延迟   : {getattr(config.strategy, 'after_sale_begin_delay', 0.3)}s")
+    print(f"    下单间隔   : {getattr(config.strategy, 'order_interval', 0.3)}s")
+    print(f"    速率偏差   : {getattr(config.strategy, 'delta', 0.05)}s")
     print(f"    请求超时   : {config.strategy.timeout_seconds}s")
     print(f"    并发数     : {config.strategy.concurrency}")
     print(f"    库存检查   : {'开启' if getattr(config.strategy, 'enable_stock_check', False) else '关闭'}")
@@ -451,11 +495,44 @@ def show_config(config, api=None):
     print("-" * 50)
 
 
+def _tweak_params(config, config_manager):
+    """参数微调"""
+    console.print()
+    console.print(Panel.fit(
+        "[bold yellow]⚠ 参数微调[/bold yellow]\n\n"
+        "[dim]这些参数影响抢票策略，[/dim][bold red]绝大多数情况下不需要修改[/bold red][dim]。\n"
+        "不当修改可能导致风控概率增加或抢票失败。[/dim]",
+        border_style="yellow"
+    ))
+    s = config.strategy
+    console.print(f"  [cyan]1.[/cyan] 开售延迟 : [bold]{s.after_sale_begin_delay}s[/bold]")
+    console.print(f"  [cyan]2.[/cyan] 下单间隔 : [bold]{getattr(s, 'order_interval', 0.3)}s[/bold]")
+    console.print(f"  [cyan]3.[/cyan] 速率偏差 : [bold]{getattr(s, 'delta', 0.05)}s[/bold]")
+    console.print(f"  [cyan]4.[/cyan] 提前开始 : [bold]{s.advance_ms}ms[/bold]")
+    console.print(f"  [cyan]0.[/cyan] 返回")
+    console.print()
+    c = input("选择参数 (0-4): ").strip()
+    try:
+        if c == "1":
+            s.after_sale_begin_delay = float(input("开售延迟(秒): ") or "0.3")
+        elif c == "2":
+            s.order_interval = float(input("下单间隔(秒): ") or "0.3")
+        elif c == "3":
+            s.delta = float(input("速率偏差(秒): ") or "0.05")
+        elif c == "4":
+            s.advance_ms = int(input("提前开始(毫秒): ") or "500")
+        else:
+            return
+        config_manager.save(config)
+        console.print("[green]已保存[/green]")
+    except ValueError:
+        console.print("[red]无效输入[/red]")
+
+
 def confirm_and_grab(config, api, viewers=None):
     """确认信息并开始抢票"""
-    print("\n" + "-" * 50)
-    print("  步骤 3 : 确认信息")
-    print("-" * 50)
+    console.print("\n[bold green]  步骤 3 : 确认信息[/bold green]")
+    console.print("─" * 50)
     
     # 获取完整信息
     try:
@@ -519,9 +596,8 @@ def confirm_and_grab(config, api, viewers=None):
         return
     
     # 开始抢票
-    print("\n" + "-" * 50)
-    print("  步骤 4 : 开始抢票")
-    print("-" * 50)
+    console.print("\n[bold red]  步骤 4 : 开始抢票[/bold red]")
+    console.print("─" * 50)
     
     result = grab_ticket_interactive(config, viewers=viewers or [])
     
@@ -599,15 +675,18 @@ def main():
     # 交互模式
     viewers = []
     while True:
-        print("\n" + "-" * 50)
-        print("  主菜单")
-        print("-" * 50)
-        print("  1. 登录B站账号")
-        print("  2. 选择活动")
-        print("  3. 开始抢票")
-        print("  4. 查看配置")
-        print("  5. 退出")
-        print()
+        console.print()
+        console.print(Panel.fit(
+            "[bold]主菜单[/bold]",
+            border_style="blue"
+        ))
+        console.print("  [cyan]1.[/cyan] 登录B站账号")
+        console.print("  [cyan]2.[/cyan] 选择活动")
+        console.print("  [cyan]3.[/cyan] [bold green]开始抢票[/bold green]")
+        console.print("  [cyan]4.[/cyan] 查看配置")
+        console.print("  [cyan]5.[/cyan] 参数微调")
+        console.print("  [cyan]6.[/cyan] 退出")
+        console.print()
         
         choice = input("请选择操作: ").strip()
         
@@ -660,9 +739,12 @@ def main():
             except:
                 api = None
             show_config(config, api)
-            
+
         elif choice == "5":
-            print("\n再见！")
+            _tweak_params(config, config_manager)
+
+        elif choice == "6":
+            console.print("\n再见！")
             break
 
 

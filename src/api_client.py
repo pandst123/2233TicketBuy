@@ -152,7 +152,7 @@ class BilibiliAPI:
         return "".join(random.choices("0123456789abcdef", k=n))
 
     def _gen_ua(self) -> str:
-        """动态生成 Android UA（对齐 BHYG _gen_ua）"""
+        """动态生成 Android UA 并存储设备属性"""
         devices = {
             "Xiaomi": ["23013RK75C", "2312DRA50C", "2211133C", "2304FPN6DC"],
             "HUAWEI": ["ALN-AL10", "BRA-AL00", "CET-AL00", "VDE-AL00"],
@@ -160,12 +160,12 @@ class BilibiliAPI:
             "OPPO": ["PHW110", "PJW110", "PHT110"],
             "vivo": ["V2301A", "V2241A", "V2338A"],
         }
-        brand = random.choice(list(devices.keys()))
-        model = random.choice(devices[brand])
-        android_ver = random.choice(["15", "14", "12"])
+        self._brand = random.choice(list(devices.keys()))
+        self._model = random.choice(devices[self._brand])
+        self._android_ver = random.choice(["15", "14", "12"])
         chrome_ver = f"{random.randint(100, 140)}.0.{random.randint(1000, 9999)}.{random.randint(100, 999)}"
         return (
-            f"Mozilla/5.0 (Linux; Android {android_ver}; {model} Build/"
+            f"Mozilla/5.0 (Linux; Android {self._android_ver}; {self._model} Build/"
             f"AQ3A.{random.randint(240000, 249999)}.{random.randint(100, 999)}; wv) "
             f"AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 "
             f"Chrome/{chrome_ver} Mobile Safari/537.36 "
@@ -225,8 +225,6 @@ class BilibiliAPI:
         self.webgl_fp = self._gen_hex(32)
         self.fe_sign = self._gen_hex(32)
         self.screen_info = f"{362}*{795}*{24}"
-        # identify = app_sign 简化版（每次请求不同）
-        self.identify = self._gen_hex(32)
 
     # ==================== 持久 HTTP Session ====================
 
@@ -245,14 +243,44 @@ class BilibiliAPI:
         return self._client
 
     def _on_request(self, request: httpx.Request) -> None:
-        """请求前 hook：注入设备指纹 headers（对齐 BHYG _on_request）"""
-        request.headers["identify"] = self.identify
-        request.headers["screenInfo"] = self.screen_info
-        request.headers["canvasFp"] = self.canvas_fp
-        request.headers["webglFp"] = self.webgl_fp
-        request.headers["feSign"] = self.fe_sign
-        # 每次请求后刷新动态指纹
+        """请求前 hook：WBI 自动签名 + Cookie 注入设备指纹"""
+        # WBI 自动签名（对标 BHYG on_request）
+        if self.wbi_signer.is_initialized() and request.url.host in (
+            "api.bilibili.com", "show.bilibili.com", "passport.bilibili.com"
+        ):
+            params = dict(request.url.params)
+            if params:
+                signed = self.wbi_signer.sign(params)
+                request.url = request.url.copy_merge_params(signed)
+        
+        # Cookie 注入设备指纹
+        identify_str = self._build_identify()
+        self._client.cookies.update({
+            "identify": identify_str,
+            "screenInfo": self.screen_info,
+            "canvasFp": self.canvas_fp,
+            "webglFp": self.webgl_fp,
+            "feSign": self.fe_sign,
+        })
         self._refresh_fingerprints()
+
+    def _build_identify(self) -> str:
+        """构建复杂 identify 字符串（对标 BHYG _app_sign + _gen_risk_header）"""
+        from urllib.parse import quote, urlencode
+        uid = self.cookies.get("DedeUserID", "0")
+        params = {
+            "appkey": "1d8b6e7d45233436",
+            "brand": self._brand,
+            "localBuvid": self.buvid3,
+            "mVersion": "296",
+            "mallVersion": "100100",
+            "model": self._model,
+            "osver": self._android_ver,
+            "platform": "h5",
+            "uid": uid,
+            "ts": str(int(time.time() * 1000)),
+        }
+        return quote(urlencode(params))
 
     def close(self) -> None:
         """关闭持久 session"""
@@ -448,12 +476,7 @@ class BilibiliAPI:
         if ctoken:
             data["token"] = ctoken
         
-        logger.info(f"prepare_token 请求: {url}")
-        logger.info(f"ctoken: {ctoken[:30] if ctoken else '空'}...")
-        logger.debug(f"prepare_token data: {data}")
-        
-        # prepare 接口的 errno 含义不同于 create，不能用 _check_response
-        # 直接发请求，手动解析
+        # prepare 接口直接请求，手动解析
         body_data = json.dumps(data)
         headers = self._get_headers("POST", url, body_data)
         try:
@@ -465,8 +488,6 @@ class BilibiliAPI:
             return {}
         
         errno = result.get("errno", -1)
-        logger.info(f"prepare_token 响应: errno={errno}, msg={result.get('msg', '')}")
-        
         if errno == 0:
             return result.get("data", {})
         else:
@@ -493,11 +514,10 @@ class BilibiliAPI:
         project = self.get_project_info(project_id)
         id_bind = project.id_bind
         
-        # 获取 token（有缓存就用，避免重复 prepare 被限速）
+        # 获取 token
         if cached_token:
             token = cached_token
             ptoken = cached_ptoken
-            logger.info("使用缓存 token，跳过 prepare")
         else:
             buyer_info = project.buyer_info
             logger.info(f"准备token: project={project_id}, screen={screen_id}, sku={sku_id}, count={count}")
@@ -508,10 +528,8 @@ class BilibiliAPI:
             ptoken = prepare_data.get("ptoken", "") or ""
 
         ptoken_clean = ptoken.replace("=", "") if ptoken else ""
-        logger.info(f"Token: {token[:20] if token else '空'}...")
-        logger.info(f"Ptoken: {ptoken_clean[:20] if ptoken_clean else '空'}...")
         
-        # prepare 和 create 之间延迟（BHYG 默认 order_interval=0.3s）
+        # prepare 和 create 之间延迟
         time.sleep(0.3)
         
         # 获取价格
@@ -567,6 +585,10 @@ class BilibiliAPI:
         
         # BHYG 风格：clickPosition + requestSource + newRisk
         # origin 应比 now 早 10-20 秒（模拟用户浏览耗时）
+        # 如果有 token_gen 则用作随机种子（BHYG 行为）
+        cp_seed = self.cp2312.token_gen if hasattr(self.cp2312, 'token_gen') and self.cp2312.token_gen else None
+        if cp_seed:
+            random.seed(int(cp_seed))
         click_origin = now_ms - random.randint(10000, 20000)
         order_data["clickPosition"] = {
             "x": random.randint(100, 500),
@@ -591,18 +613,12 @@ class BilibiliAPI:
                 logger.debug(f"hot ctoken 生成失败: {e}")
             if ctoken:
                 order_data["ctoken"] = ctoken
-                logger.info(f"hot 项目 ctoken: {ctoken[:20]}...")
-            # hot 项目使用备用 ptoken（如果配置中有的话）
             order_data["ptoken"] = ptoken_clean
             order_data["orderCreateUrl"] = "https://show.bilibili.com/api/ticket/order/createV2"
-            logger.info("hot 项目模式: 已添加 ctoken + ptoken + orderCreateUrl")
         else:
             order_data["ptoken"] = ptoken_clean
         
-        logger.info(f"订单数据: {order_data}")
-        
-        # 🔑 关键：不使用 _request()（它会抛异常），直接发 HTTP 请求
-        # 这样无论 errno 是什么，都能正确返回 token 给调用方缓存
+        # 直接发 HTTP 请求，不使用 _request()
         body_data = json.dumps(order_data)
         headers = self._get_headers("POST", url, body_data)
         
@@ -622,9 +638,8 @@ class BilibiliAPI:
         
         errno = result.get("errno", result.get("code", -1))
         msg = result.get("msg", result.get("message", ""))
-        logger.info(f"create_order 响应: errno={errno}, msg={msg}")
         
-        # 无论成功失败，都返回 (result, token, ptoken)
+        # 返回 (result, token, ptoken)
         return result, token, ptoken_clean
     
     def get_order_info(self, order_id: str) -> Dict:
@@ -659,6 +674,19 @@ class BilibiliAPI:
         url = "https://api.bilibili.com/x/web-interface/nav"
         result = self._request("GET", url)
         return result["data"]
+
+    def get_server_time(self) -> float:
+        """获取 B站服务器时间（用于精确同步）"""
+        try:
+            client = self._get_client()
+            resp = client.get("https://api.bilibili.com/x/report/click/now")
+            data = resp.json()
+            ts = data.get("data", {}).get("now", 0)
+            if ts and ts > 1000000000:
+                return ts
+        except Exception:
+            pass
+        return time.time()
 
 
 def create_api_client(config: Config) -> BilibiliAPI:
