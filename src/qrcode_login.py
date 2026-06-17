@@ -23,25 +23,15 @@ class LoginResult:
 
 
 class QRCodeLogin:
-    """
-    B站二维码登录
+    """B站二维码登录"""
     
-    流程：
-    1. 获取二维码URL
-    2. 生成二维码图片
-    3. 轮询扫码状态
-    4. 获取登录凭证
-    """
-    
-    # B站API端点
     QR_GET_URL = "https://passport.bilibili.com/x/passport-login/web/qrcode/generate"
     QR_POLL_URL = "https://passport.bilibili.com/x/passport-login/web/qrcode/poll"
     
-    # 扫码状态码
-    STATUS_SUCCESS = 0      # 成功
-    STATUS_EXPIRED = 86038  # 二维码过期
-    STATUS_SCANNED = 86090  # 已扫码，未确认
-    STATUS_NOT_SCANNED = 86101  # 未扫码
+    STATUS_SUCCESS = 0
+    STATUS_EXPIRED = 86038
+    STATUS_SCANNED = 86090
+    STATUS_NOT_SCANNED = 86101
     
     def __init__(self, timeout: int = 180):
         """
@@ -55,15 +45,7 @@ class QRCodeLogin:
         self.qrcode_url: Optional[str] = None
         
     def get_qrcode_url(self) -> Tuple[str, str]:
-        """
-        获取二维码URL
-        
-        Returns:
-            (二维码URL, qrcode_key)
-            
-        Raises:
-            Exception: 获取失败
-        """
+        """获取二维码URL，返回 (url, qrcode_key)"""
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             "Referer": "https://www.bilibili.com/",
@@ -107,13 +89,8 @@ class QRCodeLogin:
         img.save(buffer, format="PNG")
         return buffer.getvalue()
     
-    def display_qrcode(self, url: str) -> None:
-        """
-        在终端显示二维码
-        
-        Args:
-            url: 二维码内容
-        """
+    def display_qrcode(self, url: str, show_window: bool = True) -> None:
+        """显示二维码：终端 ASCII + 图片窗口弹出"""
         qr = qrcode.QRCode(
             version=1,
             error_correction=qrcode.constants.ERROR_CORRECT_L,
@@ -122,20 +99,17 @@ class QRCodeLogin:
         )
         qr.add_data(url)
         qr.make(fit=True)
-        
-        # 打印二维码到终端
         qr.print_ascii(invert=True)
+
+        if show_window:
+            try:
+                img = qr.make_image(fill_color="black", back_color="white")
+                img.show()
+            except Exception:
+                pass
     
     def poll_scan_status(self) -> Dict:
-        """
-        轮询扫码状态
-        
-        Returns:
-            API响应数据（包含原始响应）
-            
-        Raises:
-            Exception: 轮询失败
-        """
+        """轮询扫码状态"""
         if not self.qrcode_key:
             raise Exception("请先获取二维码")
         
@@ -157,21 +131,13 @@ class QRCodeLogin:
             return result
     
     def login(self, display_qrcode: bool = True) -> LoginResult:
-        """
-        执行登录流程
-        
-        Args:
-            display_qrcode: 是否在终端显示二维码
-            
-        Returns:
-            LoginResult对象
-        """
+        """执行登录流程"""
         try:
-            # 1. 获取二维码URL
+            # 获取二维码
             print("正在获取二维码...")
             url, key = self.get_qrcode_url()
             
-            # 2. 显示二维码
+            # 显示二维码
             if display_qrcode:
                 print("\n请使用B站APP扫描以下二维码：\n")
                 self.display_qrcode(url)
@@ -179,7 +145,7 @@ class QRCodeLogin:
                 print(f"\n二维码有效期: {self.timeout}秒")
                 print("请尽快扫描...\n")
             
-            # 3. 轮询扫码状态
+            # 轮询扫码状态
             start_time = time.time()
             while time.time() - start_time < self.timeout:
                 result = self.poll_scan_status()

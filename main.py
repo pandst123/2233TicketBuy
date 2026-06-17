@@ -11,7 +11,7 @@ from pathlib import Path
 from datetime import datetime
 
 if getattr(sys, 'frozen', False):
-    BASE_DIR = Path(sys._MEIPASS)
+    BASE_DIR = Path(getattr(sys, '_MEIPASS', ''))
 else:
     BASE_DIR = Path(__file__).parent
 
@@ -106,23 +106,23 @@ def get_viewers(api):
     try:
         # BHYG: https://show.bilibili.com/api/ticket/buyer/list?nomask=1
         url = "https://show.bilibili.com/api/ticket/buyer/list?nomask=1"
-        with api._create_client() as client:
-            response = client.get(url, headers=api.DEFAULT_HEADERS, cookies=api.cookies)
-            result = response.json()
-            errno = result.get("errno", -1)
-            if errno == 0:
-                data = result.get("data", {})
-                if isinstance(data, dict):
-                    viewer_list = data.get("list", [])
-                    # 保存到缓存文件，下次直接抢票时可用
-                    _save_viewers_cache(viewer_list)
-                    return viewer_list
-                else:
-                    return []
+        client = api._get_client()
+        response = client.get(url, headers=api._get_default_headers(), cookies=api.cookies)
+        result = response.json()
+        errno = result.get("errno", -1)
+        if errno == 0:
+            data = result.get("data", {})
+            if isinstance(data, dict):
+                viewer_list = data.get("list", [])
+                # 保存到缓存文件，下次直接抢票时可用
+                _save_viewers_cache(viewer_list)
+                return viewer_list
             else:
-                msg = result.get("msg", "")
-                if msg:
-                    print(f"获取观演人列表: {msg}")
+                return []
+        else:
+            msg = result.get("msg", "")
+            if msg:
+                print(f"获取观演人列表: {msg}")
     except Exception as e:
         print(f"获取观演人列表失败: {e}")
     return []
@@ -200,6 +200,9 @@ def select_event(config, api):
     print("\n" + "-" * 50)
     print("  步骤 2 : 选择活动")
     print("-" * 50)
+    print("\n  热门活动参考:")
+    print("    上海·BILIBILI MACRO LINK-PLAY! 2026 : 1001701")
+    print("    上海·BilibiliWorld 2026           : 1001653")
     
     while True:
         try:
@@ -291,6 +294,10 @@ def select_event(config, api):
         config.event.screen_id = screen["id"]
         config.event.sku_id = sku["id"]
         config.event.count = count
+        # 自动检测 hot 项目
+        if getattr(project, 'hot_project', False):
+            config.event.hot_project = True
+            print("\n  🔥 检测到热门项目，已启用 hot 模式")
         
         # 显示选择摘要
         print("\n" + "-" * 50)
@@ -304,7 +311,7 @@ def select_event(config, api):
         print(f"总价: ¥{sku.get('price', 0) * count / 100}")
         print(f"状态: {get_ticket_status_desc(sku)}")
         if viewers:
-            print(f"观演人: {', '.join([v.get('name', '未知') for v in viewers])}")
+            print(f"观演人: {', '.join([v.get('name', '未知') for v in viewers if isinstance(v, dict)])}")
         
         return config, viewers
         
@@ -313,19 +320,135 @@ def select_event(config, api):
         return config, []
 
 
-def show_config(config):
-    """显示当前配置"""
-    print("\n" + "-" * 50)
-    print("  当前配置")
-    print("-" * 50)
+def show_config(config, api=None):
+    """显示当前配置（BHYG 风格详细信息）"""
+    print("\n" + "=" * 50)
+    print("  当前运行配置")
+    print("=" * 50)
     
-    print(f"用户ID: {config.user.dede_user_id or '未设置'}")
-    print(f"活动ID: {config.event.project_id if config.event.project_id > 0 else '未设置'}")
-    print(f"场次ID: {config.event.screen_id if config.event.screen_id > 0 else '未设置'}")
-    print(f"票档ID: {config.event.sku_id if config.event.sku_id > 0 else '未设置'}")
-    print(f"购票数量: {config.event.count}")
-    print(f"并发数: {config.strategy.concurrency}")
-    print(f"请求超时: {config.strategy.timeout_seconds}s")
+    # ── 登录信息 ──
+    uid = config.user.dede_user_id or "未设置"
+    print(f"\n  [登录信息]")
+    print(f"    UID       : {uid}")
+    if api:
+        try:
+            user_info = api.get_user_info()
+            uname = user_info.get("uname", "未知")
+            is_vip = "是" if user_info.get("vipStatus") == 1 else "否"
+            level_info = user_info.get("level_info") or {}
+            level = level_info.get("current_level", "?")
+            print(f"    用户名     : {uname}")
+            print(f"    等级       : Lv{level}")
+            print(f"    大会员     : {is_vip}")
+        except:
+            print(f"    用户名     : (获取失败)")
+    
+    # ── 活动信息 ──
+    pid = config.event.project_id
+    print(f"\n  [活动信息]")
+    if pid > 0 and api:
+        try:
+            project = api.get_project_info(pid)
+            print(f"    活动名称   : {project.name}")
+            print(f"    活动ID     : {project.id}")
+            
+            # 场次
+            screen_name = "未知"
+            for s in project.screens:
+                if s["id"] == config.event.screen_id:
+                    screen_name = s.get("name", "未知")
+                    break
+            print(f"    场次       : {screen_name}")
+            print(f"    场次ID     : {config.event.screen_id}")
+            
+            # 票档
+            sku_name, sku_price, sku_status = "未知", 0, "未知"
+            for s in project.screens:
+                if s["id"] == config.event.screen_id:
+                    for sku in s.get("ticket_list", []):
+                        if sku["id"] == config.event.sku_id:
+                            sku_name = sku.get("desc", "未知")
+                            sku_price = sku.get("price", 0) / 100
+                            sku_status = get_ticket_status_desc(sku)
+                            break
+            print(f"    票档       : {sku_name} (¥{sku_price}) [{sku_status}]")
+            print(f"    票档ID     : {config.event.sku_id}")
+            
+            # 限购信息
+            id_bind = getattr(project, 'id_bind', 0)
+            if id_bind > 0:
+                print(f"    实名方式   : 单票单证 (id_bind={id_bind})")
+            else:
+                print(f"    实名方式   : 单号单证")
+            hot = getattr(project, 'hot_project', False) or getattr(config.event, 'hot_project', False)
+            if hot:
+                print(f"    项目类型   : 🔥 热门项目 (hotProject)")
+            
+            # 开售信息
+            if project.sale_begin > 0:
+                from datetime import datetime
+                sale_str = datetime.fromtimestamp(project.sale_begin).strftime('%Y-%m-%d %H:%M:%S')
+                now = time.time()
+                if now < project.sale_begin:
+                    remaining = project.sale_begin - now
+                    h, m = int(remaining // 3600), int((remaining % 3600) // 60)
+                    print(f"    开售时间   : {sale_str} (剩余 {h}h{m}m)")
+                else:
+                    print(f"    开售时间   : {sale_str} (已开售)")
+            else:
+                print(f"    开售时间   : 未设置")
+        except Exception as e:
+            print(f"    活动ID     : {pid}")
+            print(f"    详细信息   : 获取失败 ({e})")
+    else:
+        print(f"    活动ID     : {'未设置' if pid <= 0 else pid}")
+        print(f"    场次/票档  : 未选择")
+    
+    # ── 购票人 ──
+    print(f"\n  [购票信息]")
+    print(f"    购票数量   : {config.event.count}")
+    viewers = _load_viewers_cache()
+    if viewers:
+        names = ", ".join([f"{v.get('name','?')} ({v.get('tel','?')})" for v in viewers[:3]])
+        print(f"    观演人     : {names}")
+        if len(viewers) > 3:
+            print(f"                ...共 {len(viewers)} 人")
+    else:
+        print(f"    观演人     : 未设置")
+    
+    # ── 策略配置 ──
+    print(f"\n  [策略配置]")
+    print(f"    提前开始   : {config.strategy.advance_ms}ms")
+    print(f"    请求超时   : {config.strategy.timeout_seconds}s")
+    print(f"    并发数     : {config.strategy.concurrency}")
+    print(f"    库存检查   : {'开启' if getattr(config.strategy, 'enable_stock_check', False) else '关闭'}")
+    proxy_enabled = config.proxy.enabled
+    print(f"    代理       : {'已配置' if proxy_enabled else '未设置'}")
+    if proxy_enabled:
+        proxy_type = "SOCKS5" if config.proxy.socks5 else ("HTTPS" if config.proxy.https else "HTTP")
+        print(f"    代理类型   : {proxy_type}")
+    
+    # ── 设备指纹 ──
+    if api:
+        print(f"\n  [设备指纹]")
+        ua = getattr(api, 'mobile_ua', '')
+        if ua and 'Linux' in ua:
+            import re
+            m = re.search(r'Android (\d+); ([^)]+)\)', ua)
+            if m:
+                print(f"    UA 类型    : Android {m.group(1)}")
+                print(f"    UA 设备    : {m.group(2)}")
+            else:
+                print(f"    UA 类型    : 移动端")
+        else:
+            print(f"    UA 类型    : 默认")
+        buvid3 = getattr(api, 'buvid3', '')
+        if buvid3:
+            print(f"    buvid3     : {buvid3[:20]}...")
+        if getattr(api, '_client', None):
+            print(f"    Session    : 持久连接")
+    
+    print("-" * 50)
 
 
 def confirm_and_grab(config, api, viewers=None):
@@ -367,7 +490,7 @@ def confirm_and_grab(config, api, viewers=None):
         print(f"总价: ¥{sku_price * config.event.count}")
         
         if viewers:
-            print(f"观演人: {', '.join([v.get('name', '未知') for v in viewers])}")
+            print(f"观演人: {', '.join([v.get('name', '未知') for v in viewers if isinstance(v, dict)])}")
         
         # 显示开售时间
         if project.sale_begin > 0:
@@ -400,7 +523,7 @@ def confirm_and_grab(config, api, viewers=None):
     print("  步骤 4 : 开始抢票")
     print("-" * 50)
     
-    result = grab_ticket_interactive(config, viewers=viewers)
+    result = grab_ticket_interactive(config, viewers=viewers or [])
     
     print("\n" + "-" * 50)
     if result.success:
@@ -531,7 +654,12 @@ def main():
             confirm_and_grab(config, api, viewers)
             
         elif choice == "4":
-            show_config(config)
+            # 尝试创建 API 客户端以获取详细信息
+            try:
+                api = create_api_client(config)
+            except:
+                api = None
+            show_config(config, api)
             
         elif choice == "5":
             print("\n再见！")

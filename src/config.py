@@ -27,6 +27,7 @@ class EventConfig:
     sku_id: int = 0
     count: int = 1
     viewer_id: int = 0
+    hot_project: bool = False
 
 
 @dataclass

@@ -272,7 +272,7 @@ class SimpleCaptchaSolver:
     实际使用时需要集成极验识别服务
     """
     
-    def __init(self):
+    def __init__(self):
         pass
     
     def solve(self, challenge: str) -> Dict[str, str]:

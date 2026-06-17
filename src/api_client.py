@@ -6,6 +6,7 @@ B站API客户端
 import httpx
 import json
 import time
+import random
 import hashlib
 import uuid
 from typing import Dict, List, Optional, Any
@@ -52,21 +53,28 @@ class BilibiliAPI:
     参考BHYG的API设计
     """
     
-    # API基础URL
+    # API 基础 URL
     BASE_URL = "https://show.bilibili.com/api"
     
-    # 🔑 使用移动端 UA（对齐 BHYG，PC UA 容易被 B 站限速）
-    # BHYG 使用 Android WebView UA，B站会员购对移动端请求更宽容
-    MOBILE_UA = (
-        "Mozilla/5.0 (Linux; Android 15; 23013RK75C Build/AQ3A.240812.002; wv) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 "
-        "Chrome/135.0.7049.79 Mobile Safari/537.36 "
-        "BiliApp/100100 mobi_app/android"
-    )
-    
     # 请求头模板（对齐 BHYG mobile headers）
+    def _get_default_headers(self) -> Dict:
+        """获取默认请求头（含动态 UA）"""
+        return {
+            "User-Agent": self.mobile_ua,
+            "Referer": "https://show.bilibili.com/",
+            "Origin": "https://show.bilibili.com",
+            "Accept": "application/json, text/plain, */*",
+            "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+            "env": "prod",
+        }
+
     DEFAULT_HEADERS = {
-        "User-Agent": MOBILE_UA,
+        "User-Agent": (
+            "Mozilla/5.0 (Linux; Android 15; 23013RK75C Build/AQ3A.240812.002; wv) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 "
+            "Chrome/135.0.7049.79 Mobile Safari/537.36 "
+            "BiliApp/100100 mobi_app/android"
+        ),
         "Referer": "https://show.bilibili.com/",
         "Origin": "https://show.bilibili.com",
         "Accept": "application/json, text/plain, */*",
@@ -91,6 +99,9 @@ class BilibiliAPI:
         # 生成设备ID
         self.device_id = hashlib.md5(str(uuid.uuid4()).encode()).hexdigest()
         
+        # ========== 设备指纹系统（对齐 BHYG） ==========
+        self._init_fingerprint()
+        
         # 构建Cookie（对齐 BHYG show.bilibili.com 专属 cookie）
         self.cookies = {
             "SESSDATA": config.user.sessdata,
@@ -101,7 +112,15 @@ class BilibiliAPI:
             "msource": "bilibiliapp",
             "kfcSource": "bilibiliapp",
             "deviceFingerprint": self.device_id,
+            # 设备指纹 cookie
+            "buvid3": self.buvid3,
+            "buvid4": self.buvid4,
+            "buvid_fp": self.buvid_fp,
+            "_uuid": self._uuid,
         }
+        
+        # 持久 HTTP Session（对齐 BHYG）
+        self._client = None
         
         # 代理配置
         self.proxy = None
@@ -125,14 +144,121 @@ class BilibiliAPI:
             else:
                 logger.warning("WBI密钥获取失败，部分功能可能不可用")
     
-    def _create_client(self) -> httpx.Client:
-        """创建HTTP客户端"""
-        return httpx.Client(
-            http2=True,
-            timeout=self.config.strategy.timeout_seconds,
-            proxy=self.proxy,
-            follow_redirects=True,
+    # ==================== 设备指纹系统 ====================
+
+    @staticmethod
+    def _gen_hex(n: int) -> str:
+        """生成随机 hex 字符串"""
+        return "".join(random.choices("0123456789abcdef", k=n))
+
+    def _gen_ua(self) -> str:
+        """动态生成 Android UA（对齐 BHYG _gen_ua）"""
+        devices = {
+            "Xiaomi": ["23013RK75C", "2312DRA50C", "2211133C", "2304FPN6DC"],
+            "HUAWEI": ["ALN-AL10", "BRA-AL00", "CET-AL00", "VDE-AL00"],
+            "Samsung": ["SM-S9110", "SM-S9080", "SM-S9180", "SM-F9460"],
+            "OPPO": ["PHW110", "PJW110", "PHT110"],
+            "vivo": ["V2301A", "V2241A", "V2338A"],
+        }
+        brand = random.choice(list(devices.keys()))
+        model = random.choice(devices[brand])
+        android_ver = random.choice(["15", "14", "12"])
+        chrome_ver = f"{random.randint(100, 140)}.0.{random.randint(1000, 9999)}.{random.randint(100, 999)}"
+        return (
+            f"Mozilla/5.0 (Linux; Android {android_ver}; {model} Build/"
+            f"AQ3A.{random.randint(240000, 249999)}.{random.randint(100, 999)}; wv) "
+            f"AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 "
+            f"Chrome/{chrome_ver} Mobile Safari/537.36 "
+            f"BiliApp/100100 mobi_app/android"
         )
+
+    @staticmethod
+    def _gen_buvid3() -> str:
+        """生成 buvid3（B站设备标识）"""
+        import uuid as _uuid
+        parts = [
+            _uuid.uuid4().hex[:8].upper(),
+            _uuid.uuid4().hex[:4].upper(),
+            _uuid.uuid4().hex[:4].upper(),
+            _uuid.uuid4().hex[:4].upper(),
+            _uuid.uuid4().hex[:12].upper() + str(random.randint(10000, 99999)) + "infoc",
+        ]
+        return "-".join(parts)
+
+    @staticmethod
+    def _gen_buvid4() -> str:
+        """生成 buvid4"""
+        import uuid as _uuid
+        parts = [
+            _uuid.uuid4().hex[:16].upper(),
+            _uuid.uuid4().hex[:4].upper(),
+            _uuid.uuid4().hex[:4].upper(),
+            _uuid.uuid4().hex[:4].upper(),
+            _uuid.uuid4().hex[:12].upper() + str(random.randint(10000, 99999)),
+        ]
+        return "-".join(parts)
+
+    @staticmethod
+    def _gen_uuid_infoc() -> str:
+        """生成 _uuid（infoc 格式）"""
+        import uuid as _uuid
+        hex_str = _uuid.uuid4().hex.upper()
+        return (
+            f"{hex_str[:8]}-{hex_str[8:12]}-{hex_str[12:16]}"
+            f"-{hex_str[16:20]}-{hex_str[20:32]}{random.randint(10000, 99999)}infoc"
+        )
+
+    def _init_fingerprint(self) -> None:
+        """初始化设备指纹体系"""
+        self.buvid3 = self._gen_buvid3()
+        self.buvid4 = self._gen_buvid4()
+        self.buvid_fp = self._gen_hex(37)  # buvid_fp 格式: 37位hex
+        self._uuid = self._gen_uuid_infoc()
+        self.mobile_ua = self._gen_ua()
+
+        # 每次请求更新的动态指纹
+        self._refresh_fingerprints()
+
+    def _refresh_fingerprints(self) -> None:
+        """刷新每次请求需更新的指纹"""
+        self.canvas_fp = self._gen_hex(32)
+        self.webgl_fp = self._gen_hex(32)
+        self.fe_sign = self._gen_hex(32)
+        self.screen_info = f"{362}*{795}*{24}"
+        # identify = app_sign 简化版（每次请求不同）
+        self.identify = self._gen_hex(32)
+
+    # ==================== 持久 HTTP Session ====================
+
+    def _get_client(self) -> httpx.Client:
+        """获取持久 HTTP 客户端（对齐 BHYG session 管理）"""
+        if self._client is None:
+            self._client = httpx.Client(
+                http2=True,
+                timeout=self.config.strategy.timeout_seconds,
+                proxy=self.proxy,
+                follow_redirects=True,
+                event_hooks={
+                    "request": [self._on_request],
+                },
+            )
+        return self._client
+
+    def _on_request(self, request: httpx.Request) -> None:
+        """请求前 hook：注入设备指纹 headers（对齐 BHYG _on_request）"""
+        request.headers["identify"] = self.identify
+        request.headers["screenInfo"] = self.screen_info
+        request.headers["canvasFp"] = self.canvas_fp
+        request.headers["webglFp"] = self.webgl_fp
+        request.headers["feSign"] = self.fe_sign
+        # 每次请求后刷新动态指纹
+        self._refresh_fingerprints()
+
+    def close(self) -> None:
+        """关闭持久 session"""
+        if self._client is not None:
+            self._client.close()
+            self._client = None
     
     def _get_headers(
         self,
@@ -149,16 +275,13 @@ class BilibiliAPI:
             data=data,
             extra_headers=extra_headers,
         )
+        # 覆盖 sign.py 的 PC UA 为动态 Android UA
+        headers["User-Agent"] = self.mobile_ua
+        headers["env"] = "prod"
         return headers
     
     def _check_response(self, result: Dict) -> None:
-        """
-        检查响应状态
-        
-        B站API有两种状态码格式：
-        1. code/message 格式（通用API）
-        2. errno/msg 格式（会员购API）
-        """
+        """检查响应状态（支持 errno 和 code 两种格式）"""
         # 检查errno格式（会员购API）
         errno = result.get("errno", None)
         if errno is not None:
@@ -190,7 +313,7 @@ class BilibiliAPI:
         extra_headers: Optional[Dict] = None,
         use_wbi: bool = False,
     ) -> Dict:
-        """发送HTTP请求"""
+        """发送 HTTP 请求"""
         # WBI签名
         if use_wbi and params:
             params = self.wbi_signer.sign(params.copy())
@@ -206,33 +329,33 @@ class BilibiliAPI:
         headers = self._get_headers(method, url, body_data, extra_headers)
         
         try:
-            with self._create_client() as client:
-                response = client.request(
-                    method=method,
-                    url=url,
-                    params=params,
-                    data=data,
-                    json=json_data,
-                    headers=headers,
-                    cookies=self.cookies,
-                )
-                
-                # 检查Content-Type
-                content_type = response.headers.get("content-type", "")
-                if "json" not in content_type:
-                    # 打印调试信息
-                    logger.debug(f"请求URL: {method} {url}")
-                    logger.debug(f"响应状态码: {response.status_code}")
-                    logger.debug(f"响应Content-Type: {content_type}")
-                    logger.debug(f"响应内容前200字符: {response.text[:200]}")
-                    raise Exception(f"API返回非JSON响应，Content-Type: {content_type}")
-                
-                result = response.json()
-                
-                # 检查响应状态
-                self._check_response(result)
-                
-                return result
+            client = self._get_client()
+            response = client.request(
+                method=method,
+                url=url,
+                params=params,
+                data=data,
+                json=json_data,
+                headers=headers,
+                cookies=self.cookies,
+            )
+            
+            # 检查Content-Type
+            content_type = response.headers.get("content-type", "")
+            if "json" not in content_type:
+                # 打印调试信息
+                logger.debug(f"请求URL: {method} {url}")
+                logger.debug(f"响应状态码: {response.status_code}")
+                logger.debug(f"响应Content-Type: {content_type}")
+                logger.debug(f"响应内容前200字符: {response.text[:200]}")
+                raise Exception(f"API返回非JSON响应，Content-Type: {content_type}")
+            
+            result = response.json()
+            
+            # 检查响应状态
+            self._check_response(result)
+            
+            return result
                 
         except APIError:
             raise
@@ -334,9 +457,9 @@ class BilibiliAPI:
         body_data = json.dumps(data)
         headers = self._get_headers("POST", url, body_data)
         try:
-            with self._create_client() as client:
-                response = client.post(url, json=data, headers=headers, cookies=self.cookies)
-                result = response.json()
+            client = self._get_client()
+            response = client.post(url, json=data, headers=headers, cookies=self.cookies)
+            result = response.json()
         except Exception as e:
             logger.warning(f"prepare_token 请求异常: {e}")
             return {}
@@ -362,16 +485,9 @@ class BilibiliAPI:
         viewers: list = None,
         cached_token: str = "",
         cached_ptoken: str = "",
+        is_hot: bool = False,
     ) -> tuple:
-        """
-        创建订单（参考 BHYG do_order_create）
-        
-        关键设计（对齐 BHYG）：
-        - 不使用 _request()（它会抛异常导致 token 无法返回）
-        - 直接发 HTTP 请求，手动解析响应
-        - 无论成功失败，都返回 (result_dict, token, ptoken)
-        - 调用方可以缓存 token 避免重复 prepare 被限速
-        """
+        """创建订单（BHYG do_order_create 风格）"""
         url = f"{self.BASE_URL}/ticket/order/createV2?project_id={project_id}"
         
         project = self.get_project_info(project_id)
@@ -390,7 +506,7 @@ class BilibiliAPI:
                                                viewers=viewers)
             token = prepare_data.get("token", "") or ""
             ptoken = prepare_data.get("ptoken", "") or ""
-        
+
         ptoken_clean = ptoken.replace("=", "") if ptoken else ""
         logger.info(f"Token: {token[:20] if token else '空'}...")
         logger.info(f"Ptoken: {ptoken_clean[:20] if ptoken_clean else '空'}...")
@@ -450,11 +566,12 @@ class BilibiliAPI:
             order_data["tel"] = buyer_tel
         
         # BHYG 风格：clickPosition + requestSource + newRisk
-        # 注意 BHYG 没有 deviceInfo 和 riskParams（它们可能触发风控）
+        # origin 应比 now 早 10-20 秒（模拟用户浏览耗时）
+        click_origin = now_ms - random.randint(10000, 20000)
         order_data["clickPosition"] = {
-            "x": 284,
-            "y": 768,
-            "origin": now_ms,
+            "x": random.randint(100, 500),
+            "y": random.randint(500, 900),
+            "origin": click_origin,
             "now": now_ms,
         }
         order_data["requestSource"] = "neul-next"
@@ -463,6 +580,25 @@ class BilibiliAPI:
         # csrf token（B站创建订单必需）
         order_data["csrf"] = self.cookies.get("bili_jct", "")
         
+        # 🔑 BHYG hot 项目专项处理
+        if is_hot:
+            # 生成 ctoken（参考 BHYG do_order_create）
+            ctoken = ""
+            try:
+                from .cp2312 import get_ctoken
+                ctoken = get_ctoken(project_id, screen_id, sku_id, count)
+            except Exception as e:
+                logger.debug(f"hot ctoken 生成失败: {e}")
+            if ctoken:
+                order_data["ctoken"] = ctoken
+                logger.info(f"hot 项目 ctoken: {ctoken[:20]}...")
+            # hot 项目使用备用 ptoken（如果配置中有的话）
+            order_data["ptoken"] = ptoken_clean
+            order_data["orderCreateUrl"] = "https://show.bilibili.com/api/ticket/order/createV2"
+            logger.info("hot 项目模式: 已添加 ctoken + ptoken + orderCreateUrl")
+        else:
+            order_data["ptoken"] = ptoken_clean
+        
         logger.info(f"订单数据: {order_data}")
         
         # 🔑 关键：不使用 _request()（它会抛异常），直接发 HTTP 请求
@@ -470,10 +606,15 @@ class BilibiliAPI:
         body_data = json.dumps(order_data)
         headers = self._get_headers("POST", url, body_data)
         
+        # BHYG hot 项目: ptoken 加入 URL query
+        request_url = url
+        if is_hot:
+            request_url = f"{url}&ptoken={ptoken_clean}"
+        
         try:
-            with self._create_client() as client:
-                response = client.post(url, json=order_data, headers=headers, cookies=self.cookies)
-                result = response.json()
+            client = self._get_client()
+            response = client.post(request_url, json=order_data, headers=headers, cookies=self.cookies)
+            result = response.json()
         except Exception as e:
             logger.warning(f"create_order 网络异常: {e}")
             # 网络异常也返回 token，让调用方缓存
@@ -502,14 +643,14 @@ class BilibiliAPI:
         """检查登录状态"""
         try:
             url = "https://api.bilibili.com/x/web-interface/nav"
-            with self._create_client() as client:
-                response = client.get(
-                    url,
-                    headers=self.DEFAULT_HEADERS,
-                    cookies=self.cookies,
-                )
-                result = response.json()
-                return result.get("code") == 0
+            client = self._get_client()
+            response = client.get(
+                url,
+                headers=self._get_default_headers(),
+                cookies=self.cookies,
+            )
+            result = response.json()
+            return result.get("code") == 0
         except:
             return False
     

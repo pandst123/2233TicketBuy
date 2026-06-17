@@ -177,7 +177,7 @@ class SignGenerator:
         
         # 构建请求头
         headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "User-Agent": "Mozilla/5.0 (Linux; Android 15; 23013RK75C Build/AQ3A.240812.002; wv) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.7049.79 Mobile Safari/537.36 BiliApp/100100 mobi_app/android",
             "Referer": "https://show.bilibili.com/",
             "Origin": "https://show.bilibili.com",
             "Accept": "application/json, text/plain, */*",

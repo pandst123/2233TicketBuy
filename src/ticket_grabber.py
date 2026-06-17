@@ -17,6 +17,7 @@ from enum import Enum
 
 from .config import Config
 from .api_client import BilibiliAPI, create_api_client
+from .gaia import GaiaVerifier, create_gaia_verifier
 from .logger import logger
 
 
@@ -40,33 +41,9 @@ class TicketResult:
 
 
 class TicketGrabber:
-    """
-    抢票核心逻辑
+    """抢票核心逻辑"""
     
-    参考biliTickerBuy和BHYG的策略：
-    1. 开售前：等待
-    2. 开售后：持续抢票
-    3. 遇到429/-412：降速，只检测票量
-    4. 遇到-352：触发风控，暂停
-    5. 遇到售罄：继续监控
-    6. 成功：返回订单
-    
-    完整错误码表：
-    errno=0: 成功
-    errno=-101: 未登录
-    errno=-352: 风控
-    errno=-401: 未登录
-    errno=-403: 无权限
-    errno=-412: 请求过于频繁（同429）
-    errno=10007: 库存不足
-    errno=100009: 订单创建失败
-    errno=100001: 售罄
-    errno=100002: 未开售
-    errno=100003: 超出限购
-    errno=100004: 系统繁忙
-    """
-    
-    # 错误码定义
+    # 错误码
     ERROR_CODE_SUCCESS = 0
     ERROR_CODE_NOT_LOGIN = -101       # 未登录
     ERROR_CODE_RISK = -352            # 风控
@@ -105,6 +82,14 @@ class TicketGrabber:
         self.max_429_count = 5        # 最大429次数
         self._429_count = 0           # 当前429次数
         self._risk_cooldown = 60      # 风控冷却时间（秒）
+        self._is_hot = getattr(config.event, 'hot_project', False)
+        
+        # 智能间隔（对齐 BHYG last_order_time / last_order_check_time）
+        self.last_order_time = 0
+        self.last_order_check_time = 0
+        
+        # Gaia 风控验证器
+        self.gaia = GaiaVerifier(self.api.cookies)
         
         # Token 缓存（参考 BHYG get_token）
         self._cached_token = None
@@ -208,12 +193,12 @@ class TicketGrabber:
                 "skuId": self.config.event.sku_id,
                 "screenId": self.config.event.screen_id,
             }
-            headers = self.api.DEFAULT_HEADERS.copy()
+            headers = self.api._get_default_headers()
             headers["Content-Type"] = "application/json"
             
-            with self.api._create_client() as client:
-                response = client.post(url, json=data, headers=headers, cookies=self.api.cookies)
-                result = response.json()
+            client = self.api._get_client()
+            response = client.post(url, json=data, headers=headers, cookies=self.api.cookies)
+            result = response.json()
             
             code = result.get("code", result.get("errno", -1))
             if code != 0:
@@ -279,19 +264,71 @@ class TicketGrabber:
                 logger.info(f"倒计时: {int(remaining)}秒")
                 time.sleep(1)
             else:
-                # 最后10秒，高频检查
+                # 🔑 最后 10 秒：高频检查（对标 BHYG 忙等）
                 time.sleep(0.1)
-    
-    def _try_create_order(self) -> TicketResult:
-        """
-        尝试创建订单（单次），参考 BHYG do_order_create 设计
         
-        关键设计（对齐 BHYG）：
-        - 检查 token 是否过期（BHYG: time.time() < self.token_exp - 60）
-        - 无论成功失败，都缓存 token（避免重复 prepare 被限速）
-        - errno=1 时等待 3 秒后重试
-        - 异常也被视为可恢复的失败
+        # 🔑 BHYG 风格：prereq 预热连接
+        try:
+            import httpx
+            client = self.api._get_client()
+            prereq = client.head("https://show.bilibili.com")
+            logger.debug(f"预热连接完成, CDN: {prereq.headers.get('X-Cache-Webcdn', '未知')}")
+        except Exception as e:
+            logger.debug(f"预热连接异常（可忽略）: {e}")
+        
+        # 🔑 精确忙等：最后 delta 秒内用 while True 忙等
+        delta = 0.05
+        while sale_begin - advance_seconds + delta > time.time():
+            pass
+        logger.info("时间到！开始抢票...")
+    
+    def _try_gaia_verify(self, result: dict) -> bool:
         """
+        尝试 gaia 风控验证（BHYG handle_gaia）
+        
+        Args:
+            result: create_order 返回的完整 result dict
+        
+        Returns:
+            是否成功获取 grisk_id
+        """
+        if not self.gaia.check_risk_response(result):
+            return False
+        
+        v_voucher = result.get("data", {}).get("v_voucher") if result.get("data") else None
+        if not v_voucher:
+            risk_params = result.get("data", {}).get("riskParams") if result.get("data") else None
+            if risk_params and isinstance(risk_params, dict):
+                v_voucher = risk_params.get("v_voucher")
+        
+        if not v_voucher:
+            logger.warning("gaia 风控但无法提取 v_voucher")
+            return False
+        
+        logger.info("触发 gaia 风控，开始验证流程...")
+        
+        # 使用已有的 GeetestHandler 处理验证码
+        from .captcha import GeetestHandler
+        try:
+            handler = GeetestHandler(self.api.cookies)
+            captcha_result = handler.handle_captcha(v_voucher)
+            if captcha_result.get("success"):
+                grisk_id = captcha_result.get("grisk_id", "")
+                if grisk_id:
+                    logger.info(f"gaia 验证成功, grisk_id: {grisk_id[:20] if grisk_id else '空'}...")
+                    self.api.cookies["grisk_id"] = grisk_id
+                    return True
+                else:
+                    logger.warning("gaia handle_captcha 成功但未获取到 grisk_id")
+            else:
+                logger.warning(f"gaia 验证未通过: {captcha_result.get('message', '未知')}")
+        except Exception as e:
+            logger.warning(f"gaia 验证流程异常: {e}")
+        
+        return False
+
+    def _try_create_order(self) -> TicketResult:
+        """尝试创建订单（单次）"""
         new_token = None
         new_ptoken = None
         
@@ -313,6 +350,7 @@ class TicketGrabber:
                 viewers=self.viewers,
                 cached_token=self._cached_token or "",
                 cached_ptoken=self._cached_ptoken or "",
+                is_hot=self._is_hot,
             )
             
             errno = result.get("errno", result.get("code", -1))
@@ -321,12 +359,30 @@ class TicketGrabber:
             if errno == self.ERROR_CODE_SUCCESS:
                 order_id = result.get("data", {}).get("orderId") or result.get("data", {}).get("order_id")
                 logger.success(f"订单创建成功！订单ID: {order_id}")
+                # 🔑 生成支付二维码（对标 BHYG）
+                _show_pay_qrcode(self.api, order_id, token)
                 return TicketResult(
                     success=True,
                     order_id=order_id,
                     message="抢票成功",
                     timestamp=time.time(),
                 )
+            # 🔑 -352 gaia 风控：尝试自动验证
+            elif errno == -352:
+                logger.warning(f"触发 gaia 风控 (errno=-352): {msg}")
+                if self._try_gaia_verify(result):
+                    logger.info("gaia 验证成功，立即重试")
+                    # 立即重试（不 sleep，递归调用消耗 cached token 直接重试）
+                    self._cached_token = new_token  # 更新缓存
+                    self._cached_ptoken = new_ptoken or ""
+                    return TicketResult(
+                        success=False,
+                        message=f"gaia 验证通过, 需重试",
+                        timestamp=time.time(),
+                    )
+                else:
+                    logger.warning("gaia 验证未通过，等待冷却后重试")
+                    time.sleep(self._risk_cooldown)
             else:
                 # errno=1 "请慢一点" → 较长冷却（BHYG风格：5秒+退避）
                 if errno == 1:
@@ -356,19 +412,7 @@ class TicketGrabber:
                 logger.info(f"Token 已缓存: {new_token[:20]}...")
     
     def _handle_grab_result(self, result: TicketResult) -> bool:
-        """
-        处理抢票结果（参考 BHYG rush_mode 错误处理策略）
-        
-        BHYG 错误码对照：
-        - 0: 成功
-        - 412: 请求过于频繁 → 计数+等待
-        - -401: gaia 风控
-        - 429: 限流
-        - 100001/900001/900002: 被阻止，重试
-        - 100009: 库存不足
-        - 100044: 需要验证码
-        - 3/221/219: 各种屏蔽
-        """
+        """处理抢票结果（BHYG 错误码策略）"""
         if result.success:
             self.result = result
             self.phase = GrabPhase.SUCCESS
@@ -389,9 +433,14 @@ class TicketGrabber:
         logger.warning(f"抢票失败: {message}")
         
         # === 致命错误（停止抢票） ===
-        if errno in (-101, -401):
+        if errno == -101:
             logger.error("未登录，请先登录")
             return False
+        # -401 有时是 gaia 风控（需要在 _try_create_order 中处理），这里作为后备
+        if errno == -401:
+            logger.warning("errno=-401，可能存在 gaia 风控，等待冷却")
+            time.sleep(self._risk_cooldown)
+            return True
         if errno == -403:
             logger.error("无权限访问")
             return False
@@ -407,6 +456,7 @@ class TicketGrabber:
         
         if errno in (-412, 412, 429):
             self._429_count += 1
+            self.last_order_time = time.time()
             logger.warning(f"触发限流 ({self._429_count}/{self.max_429_count})")
             if self._429_count >= self.max_429_count:
                 logger.warning("限流次数过多，切换到监控模式（BHYG: 412累计20次等300秒）")
@@ -437,6 +487,22 @@ class TicketGrabber:
         if errno in (100004, 3, 221):
             logger.debug(f"系统繁忙/屏蔽 (errno={errno})，短暂等待...")
             time.sleep(0.5)
+            self.last_order_check_time = time.time()
+            return True
+
+        # === 验证码（BHYG: solve_captcha） ===
+        if errno == 100044:
+            logger.warning("触发验证码 (errno=100044)，需要手动处理")
+            logger.info("请在B站App或网页完成验证后继续")
+            time.sleep(10)
+            self.last_order_check_time = time.time()
+            return True
+        
+        # === pay_money 自动更新（BHYG: 100034） ===
+        if errno == 100034:
+            # 暂不处理，B站改价时会通知
+            logger.warning("pay_money 不匹配，可能需要更新价格")
+            self.last_order_check_time = time.time()
             return True
         
         # errno=1 "请慢一点" 已经在 _try_create_order 中处理了延迟
@@ -467,16 +533,7 @@ class TicketGrabber:
         return True
     
     def grab_ticket(self) -> TicketResult:
-        """
-        执行抢票（参考 BHYG rush_mode 设计）
-        
-        策略：
-        1. 持续打请求直到成功
-        2. 可选：先检查库存再下单（BHYG 模式）
-        3. 429/-412 时切换到监控模式
-        4. 监控到有票后切回抢票模式
-        5. 智能间隔调整
-        """
+        """执行抢票（BHYG rush_mode 风格）"""
         self.phase = GrabPhase.GRABBING
         logger.info("开始抢票...")
         
@@ -539,10 +596,16 @@ class TicketGrabber:
                 buyers = self.buyer_name or "未设置"
                 logger.info(f"持续抢票中... 第{attempt}次, 购票人: {buyers}")
             
-            # 智能等待间隔（参考 BHYG）
-            # errno=1 的延迟已在 _try_create_order 中处理
-            current_interval = self.grab_interval
-            time.sleep(current_interval)
+            # 智能等待间隔（参考 BHYG 三重判断）
+            # 三重条件：last_order 后 > 5s、last_check 后 > 1s、默认间隔
+            now = time.time()
+            if (self.last_order_time + 5 - 0.05) - now > 0:
+                sleep_time = (self.last_order_time + 5 - 0.05) - now
+            elif (self.last_order_check_time + 1 - 0.05) - now > 0:
+                sleep_time = (self.last_order_check_time + 1 - 0.05) - now
+            else:
+                sleep_time = self.grab_interval
+            time.sleep(sleep_time)
         
         return TicketResult(
             success=False,
@@ -605,6 +668,28 @@ class TicketGrabber:
         """停止抢票"""
         self._stop_event.set()
         self.phase = GrabPhase.FAILED
+
+
+def _show_pay_qrcode(api, order_id: str, order_token: str):
+    """显示支付二维码（对标 BHYG）"""
+    try:
+        import qrcode
+        project_id = api.config.event.project_id
+        url = f"https://show.bilibili.com/api/ticket/order/createstatus?orderId={order_id}&project_id={project_id}&token={order_token}"
+        client = api._get_client()
+        resp = client.get(url)
+        data = resp.json()
+        code_url = data.get("data", {}).get("payParam", {}).get("code_url", "")
+        if code_url:
+            logger.info("\n请扫描以下支付二维码完成支付：")
+            qr = qrcode.QRCode(version=1, box_size=10, border=5)
+            qr.add_data(code_url)
+            qr.make(fit=True)
+            qr.print_ascii(invert=True)
+            logger.info(f"或打开链接: {code_url}")
+    except Exception as e:
+        logger.warning(f"支付二维码生成失败: {e}")
+        logger.info(f"请手动完成支付，订单ID: {order_id}")
 
 
 def grab_ticket_interactive(config: Config, viewers: list = None) -> TicketResult:
