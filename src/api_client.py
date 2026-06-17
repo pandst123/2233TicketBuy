@@ -368,6 +368,11 @@ class BilibiliAPI:
                 cookies=self.cookies,
             )
             
+            # 调试日志：每次请求的方法/URL/状态码
+            logger.debug(f"{method} {url} → {response.status_code}")
+            if response.status_code >= 400:
+                logger.debug(f"  响应头: {dict(response.headers)}")
+            
             # 检查Content-Type
             content_type = response.headers.get("content-type", "")
             if "json" not in content_type:
@@ -488,6 +493,8 @@ class BilibiliAPI:
             return {}
         
         errno = result.get("errno", -1)
+        if errno != 0:
+            logger.debug(f"prepare_token errno={errno}: {result.get('msg', '')}")
         if errno == 0:
             return result.get("data", {})
         else:
@@ -639,6 +646,10 @@ class BilibiliAPI:
         errno = result.get("errno", result.get("code", -1))
         msg = result.get("msg", result.get("message", ""))
         
+        # 调试日志：非成功响应记录完整信息
+        if errno != 0:
+            logger.debug(f"create_order 响应: errno={errno}, msg={msg}, data_keys={list(result.get('data', {}).keys()) if result.get('data') else 'None'}")
+        
         # 返回 (result, token, ptoken)
         return result, token, ptoken_clean
     
@@ -683,9 +694,11 @@ class BilibiliAPI:
             data = resp.json()
             ts = data.get("data", {}).get("now", 0)
             if ts and ts > 1000000000:
+                offset = ts - time.time()
+                logger.debug(f"服务器时间: {ts}, 本地偏移: {offset:+.2f}s")
                 return ts
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"获取服务器时间失败: {e}")
         return time.time()
 
 

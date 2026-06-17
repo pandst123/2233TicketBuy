@@ -273,12 +273,17 @@ class TicketGrabber:
                 # 🔑 最后 10 秒：高频检查（对标 BHYG 忙等）
                 time.sleep(0.1)
         
-        # 🔑 BHYG 风格：prereq 预热连接
+        # 🔑 BHYG 风格：prereq 预热连接 + CDN 节点检测
         try:
             import httpx
             client = self.api._get_client()
             prereq = client.head("https://show.bilibili.com")
-            logger.debug(f"预热连接完成, CDN: {prereq.headers.get('X-Cache-Webcdn', '未知')}")
+            cdn = prereq.headers.get("X-Cache-Webcdn", "")
+            via = prereq.headers.get("Via", "")
+            if cdn:
+                logger.debug(f"CDN节点: {cdn}, Via: {via}")
+            elif via:
+                logger.debug(f"网络节点: {via}")
         except Exception as e:
             logger.debug(f"预热连接异常（可忽略）: {e}")
         
