@@ -745,12 +745,6 @@ def _show_pay_qrcode(api, order_id: str, order_token: str):
             qr.make(fit=True)
             qr.print_ascii(invert=True)
             logger.info(f"或打开链接: {code_url}")
-            try:
-                img = qr.make_image(fill_color="black", back_color="white")
-                img = img.resize((img.width * 6, img.height * 6))
-                img.show()
-            except Exception:
-                pass
     except Exception as e:
         logger.warning(f"支付二维码生成失败: {e}")
         logger.info(f"请手动支付，订单ID: {order_id}")

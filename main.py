@@ -328,44 +328,6 @@ def show_config(config, api=None):
     """显示当前配置"""
     console.print()
     console.print(Panel.fit("[bold]当前运行配置[/bold]", border_style="blue"))
-    """参数微调（BHYG 风格警告）"""
-    console.print()
-    console.print(Panel.fit(
-        "[bold yellow]⚠ 参数微调[/bold yellow]\n\n"
-        "[dim]这些参数影响抢票策略，[/dim][bold red]绝大多数情况下不需要修改[/bold red][dim]。\n"
-        "不当修改可能导致风控概率增加或抢票失败。[/dim]",
-        border_style="yellow"
-    ))
-    console.print(f"  [cyan]1.[/cyan] 开售延迟    : [bold]{config.strategy.after_sale_begin_delay}s[/bold] (开售后延迟N秒开始)")
-    console.print(f"  [cyan]2.[/cyan] 下单间隔    : [bold]{getattr(config.strategy, 'order_interval', 0.3)}s[/bold] (每次下单间隔)")
-    console.print(f"  [cyan]3.[/cyan] 速率偏差    : [bold]{getattr(config.strategy, 'delta', 0.05)}s[/bold] (智能间隔微调)")
-    console.print(f"  [cyan]4.[/cyan] 提前开始    : [bold]{config.strategy.advance_ms}ms[/bold]")
-    console.print(f"  [cyan]0.[/cyan] 返回")
-    console.print()
-    
-    c = input("选择参数 (0-4): ").strip()
-    try:
-        if c == "1":
-            v = float(input("开售延迟(秒, 默认0.3): ") or "0.3")
-            config.strategy.after_sale_begin_delay = v
-        elif c == "2":
-            v = float(input("下单间隔(秒, 默认0.3): ") or "0.3")
-            config.strategy.order_interval = v
-        elif c == "3":
-            v = float(input("速率偏差(秒, 默认0.05): ") or "0.05")
-            config.strategy.delta = v
-        elif c == "4":
-            v = int(input("提前开始(毫秒, 默认500): ") or "500")
-            config.strategy.advance_ms = v
-        else:
-            return
-        config_manager.save(config)
-        console.print("[green]已保存[/green]")
-    except ValueError:
-        console.print("[red]无效输入[/red]")
-    """显示当前配置"""
-    console.print()
-    console.print(Panel.fit("[bold]当前运行配置[/bold]", border_style="blue"))
     
     # ── 登录信息 ──
     uid = config.user.dede_user_id or "未设置"
@@ -520,7 +482,7 @@ def _tweak_params(config, config_manager):
         elif c == "3":
             s.delta = float(input("速率偏差(秒): ") or "0.05")
         elif c == "4":
-            s.advance_ms = int(input("提前开始(毫秒): ") or "500")
+            s.advance_ms = int(input("提前开始(毫秒, 默认0): ") or "0")
         else:
             return
         config_manager.save(config)
