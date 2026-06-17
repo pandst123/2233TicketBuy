@@ -210,6 +210,8 @@ class TicketGrabber:
             
             # stockStatus: 1=TEMP_SOLD_OUT, 2=SOLD_OUT, 3=HAS_STOCK
             stock_status = result.get("data", {}).get("stockStatus", 0)
+            if stock_status != 3:
+                logger.debug(f"stock/check stockStatus={stock_status} (无票)")
             return stock_status == 3
             
         except Exception as e:
