@@ -250,6 +250,8 @@ class TicketGrabber:
         logger.time(f"开售时间: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(sale_begin))}")
         logger.info(f"提前开始: {advance_ms}ms")
         
+        _re_synced = False
+        
         while True:
             current_time = time.time()
             remaining = target_time - current_time
@@ -265,6 +267,14 @@ class TicketGrabber:
                 logger.time(f"倒计时: {hours}小时{minutes}分钟")
                 time.sleep(60)
             elif remaining > 5:
+                # 倒计时 60s 时再次同步服务器时间
+                if not _re_synced:
+                    _re_synced = True
+                    server_now = self.api.get_server_time()
+                    new_offset = server_now - time.time()
+                    drift = new_offset - time_offset
+                    target_time -= drift
+                    logger.time(f"二次时间同步: 漂移 {drift:+.2f}s, 总偏移 {new_offset:+.2f}s")
                 logger.time(f"倒计时: {int(remaining)}秒")
                 time.sleep(1)
             else:
