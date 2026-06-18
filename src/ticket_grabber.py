@@ -522,6 +522,9 @@ class TicketGrabber:
         if errno == 100051:
             logger.warning("开售已结束/订单太晚 (100051)")
             return False
+        if errno == 209001:
+            logger.error("缺少联系人信息 (209001)")
+            return False
         
         # === 限流/风控 ===
         if errno == 1:

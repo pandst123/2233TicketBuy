@@ -508,6 +508,16 @@ class BilibiliAPI:
             return {}
         
         errno = result.get("errno", -1)
+        if errno == 0:
+            data = result.get("data", {})
+            ga = data.get("ga_data", {})
+            shield = data.get("shield", {})
+            if shield.get("open"):
+                logger.warning(f"prepare_token shield 开启: {shield}")
+            if ga.get("decisions"):
+                logger.debug(f"ga decisions: {ga.get('decisions')}")
+            if ga.get("riskResult", 0) != 0:
+                logger.warning(f"ga riskResult={ga['riskResult']}")
         if errno != 0:
             logger.debug(f"prepare_token errno={errno}: {result.get('msg', '')}")
         if errno == 0:

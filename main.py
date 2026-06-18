@@ -71,46 +71,21 @@ def login(config_manager):
 
 
 def get_ticket_status_desc(sku):
-    """获取票档状态描述"""
-    # clickable是主要判断依据
-    clickable = sku.get("clickable", None)
-    
-    # 检查stock字段
-    stock = sku.get("stock", None)
-    count = -1
-    if isinstance(stock, dict):
-        count = stock.get("count", -1)
-    elif isinstance(stock, (int, float)):
-        count = int(stock)
-    
-    # 检查sale_start字段
-    sale_start = sku.get("sale_start", "")
-    
-    # 判断状态
-    if clickable is False:
-        # 不可点击，可能是未开售或已售罄
-        if count == 0:
-            return "已售罄"
-        elif sale_start:
-            return f"未开售({sale_start}开售)"
-        else:
-            return "未开售"
-    elif clickable is True:
-        # 可点击，可以购买
-        if count == 0:
-            return "已售罄"
-        elif count > 0:
-            return f"可购买(余{count})"
-        else:
-            return "可购买"
-    else:
-        # clickable为None，尝试其他判断
-        if count == 0:
-            return "已售罄"
-        elif count > 0:
-            return f"可购买(余{count})"
-        else:
-            return "未知状态"
+    """获取票档状态描述（sale_flag_number 为主，stock 为辅）"""
+    flag = sku.get("sale_flag_number", 0)
+    FLAG_MAP = {
+        1: "未开售", 2: "售卖中", 3: "已停售", 4: "已售罄",
+        5: "不可售", 6: "库存紧张", 8: "暂时售罄", 9: "无购买资格",
+    }
+    status = FLAG_MAP.get(flag, "未知")
+    # flag=2 时尝试用 stock.count 显示余量
+    if flag == 2:
+        stock = sku.get("stock", None)
+        if isinstance(stock, dict) and stock.get("count", -1) >= 0:
+            status = f"余{stock['count']}"
+        elif isinstance(stock, (int, float)) and stock >= 0:
+            status = f"余{int(stock)}"
+    return status
 
 
 def get_viewers(api):
