@@ -67,20 +67,6 @@ class BilibiliAPI:
             "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
             "env": "prod",
         }
-
-    DEFAULT_HEADERS = {
-        "User-Agent": (
-            "Mozilla/5.0 (Linux; Android 15; 23013RK75C Build/AQ3A.240812.002; wv) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 "
-            "Chrome/135.0.7049.79 Mobile Safari/537.36 "
-            "BiliApp/100100 mobi_app/android"
-        ),
-        "Referer": "https://show.bilibili.com/",
-        "Origin": "https://show.bilibili.com",
-        "Accept": "application/json, text/plain, */*",
-        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
-        "env": "prod",
-    }
     
     def __init__(self, config: Config, cp2312_generator: Optional[Cp2312Generator] = None):
         """

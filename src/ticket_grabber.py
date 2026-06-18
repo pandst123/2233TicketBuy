@@ -17,7 +17,7 @@ from enum import Enum
 
 from .config import Config
 from .api_client import BilibiliAPI, create_api_client
-from .gaia import GaiaVerifier, create_gaia_verifier
+from .gaia import GaiaVerifier
 from .captcha import GeetestHandler
 from .logger import logger
 
@@ -67,7 +67,6 @@ class TicketGrabber:
         self.phase = GrabPhase.WAITING
         self.result: Optional[TicketResult] = None
         self._stop_event = threading.Event()
-        self._lock = threading.Lock()
         
         # 从 viewers 提取购票人信息
         self.buyer_name = ""
@@ -540,11 +539,6 @@ class TicketGrabber:
         if errno not in (-412, 412):
             self._412_count = 0
         
-        if errno == -352:
-            logger.warning(f"gaia 风控 (-352)，等待{self._risk_cooldown}s")
-            time.sleep(self._risk_cooldown)
-            return True
-        
         # === 库存相关（继续监控） ===
         if errno in (10007, 100001, 100009, 900001, 900002, 219):
             return True
@@ -639,7 +633,6 @@ class TicketGrabber:
         
         attempt = 0
         stock_check_count = 0
-        last_order_time = 0
         enable_stock_check = getattr(self.config.strategy, 'enable_stock_check', True)
         
         while not self._stop_event.is_set():
