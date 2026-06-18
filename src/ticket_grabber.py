@@ -424,6 +424,7 @@ class TicketGrabber:
                         pass
                 else:
                     logger.info("请前往B站App查看订单并支付")
+                _notify_success(str(order_id), self.buyer_name)
                 return TicketResult(
                     success=True,
                     order_id=order_id,
@@ -829,6 +830,23 @@ def _show_pay_qrcode(api, order_id: str, order_token: str):
     except Exception as e:
         logger.warning(f"支付二维码生成失败: {e}")
         logger.info(f"请手动支付，订单ID: {order_id}")
+
+
+def _notify_success(order_id: str, buyer: str = ""):
+    """Windows 桌面通知 + 提示音"""
+    try:
+        import winsound
+        winsound.MessageBeep(winsound.MB_ICONASTERISK)
+    except Exception:
+        pass
+    try:
+        import ctypes
+        msg = f"订单ID: {order_id}\n请尽快完成支付！"
+        if buyer:
+            msg = f"购票人: {buyer}\n{msg}"
+        ctypes.windll.user32.MessageBoxW(0, msg, "2233TicketBuy - 抢票成功！", 0x40)
+    except Exception:
+        pass
 
 
 def grab_ticket_interactive(config: Config, viewers: Optional[List[Dict]] = None) -> TicketResult:
