@@ -122,6 +122,12 @@ class Logger:
         """失败日志（红色）"""
         self.logger.error(f"[red][FAIL][/red] {message}")
 
+    def hot(self, message: str):
+        """Hot项目日志（🔥 前缀，控制台可见 + 写入常规日志）"""
+        ts = datetime.now().strftime('%H:%M:%S') + f'.{datetime.now().microsecond // 1000:03d}'
+        self.console.print(f"[dim][{ts}][/dim] [bold yellow]🔥 {message}[/bold yellow]")
+        self.logger.debug(f"[HOT] {message}")
+
 
 # 全局日志实例
 logger = Logger()

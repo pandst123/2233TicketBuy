@@ -618,12 +618,16 @@ class BilibiliAPI:
             try:
                 from .cp2312 import get_ctoken
                 ctoken = get_ctoken(project_id, screen_id, sku_id, count)
+                logger.hot(f"ctoken 生成成功: {ctoken[:20]}...")
             except Exception as e:
-                logger.debug(f"hot ctoken 生成失败: {e}")
+                logger.hot(f"ctoken 生成失败: {e}")
             if ctoken:
                 order_data["ctoken"] = ctoken
             order_data["ptoken"] = ptoken_clean
             order_data["orderCreateUrl"] = "https://show.bilibili.com/api/ticket/order/createV2"
+            # 记录完整请求（脱敏）
+            _safe = {k: v for k, v in order_data.items() if k not in ("csrf", "buyer", "tel", "contactInfo")}
+            logger.hot(f"create_order 请求: url={url}, payload={json.dumps(_safe, ensure_ascii=False)[:800]}")
         else:
             order_data["ptoken"] = ptoken_clean
         
@@ -648,9 +652,12 @@ class BilibiliAPI:
         errno = result.get("errno", result.get("code", -1))
         msg = result.get("msg", result.get("message", ""))
         
-        # 调试日志：非成功响应记录完整信息
-        if errno != 0:
-            logger.debug(f"create_order 响应: errno={errno}, msg={msg}, data_keys={list(result.get('data', {}).keys()) if result.get('data') else 'None'}")
+        # 🔥 Hot 项目：记录完整响应
+        if is_hot:
+            logger.hot(f"create_order 响应: errno={errno}, msg={msg}")
+            if errno != 0:
+                logger.hot(f"create_order 完整响应: {json.dumps(result, ensure_ascii=False)[:1000]}")
+
         
         # 返回 (result, token, ptoken)
         return result, token, ptoken_clean

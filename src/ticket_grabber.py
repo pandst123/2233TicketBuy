@@ -378,6 +378,13 @@ class TicketGrabber:
         if self._cached_token and time.time() > self._token_exp - 60:
             self._cached_token = None
             self._cached_ptoken = None
+
+        # 🔥 Hot 项目：记录 token 状态（前5次）
+        if self._is_hot:
+            attempt_no = getattr(self, '_attempt_count', 0)
+            if attempt_no <= 5:
+                using_cached = bool(self._cached_token)
+                logger.hot(f"  token={'缓存' if using_cached else '刷新'}, 距过期={max(0, self._token_exp - time.time()):.0f}s")
         
         try:
             result, new_token, new_ptoken = self.api.create_order(
@@ -619,7 +626,14 @@ class TicketGrabber:
         """执行抢票（BHYG rush_mode 风格）"""
         self.phase = GrabPhase.GRABBING
         logger.info("开始抢票...")
-        
+
+        # 🔥 Hot 项目：记录启动参数
+        if self._is_hot:
+            logger.hot(f"=== Hot 模式启动 ===")
+            logger.hot(f"项目: {self.config.event.project_id}, 场次: {self.config.event.screen_id}, 票档: {self.config.event.sku_id}")
+            logger.hot(f"数量: {self.config.event.count}, 间隔: {self.grab_interval}s, advance: {self.config.strategy.advance_ms}ms")
+            logger.hot(f"购票人: {self.buyer_name}")
+
         # 强制刷新 token（对齐 BHYG: token_exp = 0）
         self._cached_token = None
         self._cached_ptoken = None
@@ -660,7 +674,12 @@ class TicketGrabber:
                     continue
             
             # 抢票模式
+            t_start = time.time()
             result = self._try_create_order()
+            elapsed_ms = (time.time() - t_start) * 1000
+
+            if self._is_hot and attempt <= 10:
+                logger.hot(f"第{attempt}次: {result.message}, 耗时={elapsed_ms:.0f}ms")
             
             if result.success:
                 self.result = result
