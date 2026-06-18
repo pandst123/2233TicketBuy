@@ -83,7 +83,7 @@ class Logger:
         self.logger.addHandler(console_handler)
         
         # 文件处理器
-        log_file = self.log_dir / f"{self.name}_{datetime.now().strftime('%Y%m%d')}.log"
+        log_file = self.log_dir / f"{self.name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
         file_handler = logging.FileHandler(log_file, encoding='utf-8')
         file_handler.setLevel(logging.DEBUG)
         file_format = logging.Formatter(
