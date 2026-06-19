@@ -534,6 +534,9 @@ class TicketGrabber:
         if errno == 100048:
             logger.warning("有尚未完成订单，请先支付或取消后再抢")
             return False
+        if errno == 100079:
+            logger.warning("重复下单，订单可能已生成，请检查B站App")
+            return False
         if errno == 100051:
             logger.warning("开售已结束/订单太晚 (100051)")
             return False
