@@ -283,12 +283,15 @@ class TicketGrabber:
                 logger.time(f"二次时间同步: 漂移 {drift:+.2f}s, 总偏移 {new_offset:+.2f}s")
             
             # 显示倒计时
-            if remaining > 60:
+            if remaining > 120:
                 hours = int(remaining // 3600)
                 minutes = int((remaining % 3600) // 60)
                 seconds = int(remaining % 60)
                 logger.time(f"倒计时: {hours}小时{minutes}分{seconds}秒")
                 time.sleep(60)
+            elif remaining > 65:
+                # 精准睡到 60s 边界，确保二次同步有完整窗口
+                time.sleep(remaining - 60)
             elif remaining > 5:
                 logger.time(f"倒计时: {int(remaining)}秒")
                 time.sleep(1)
