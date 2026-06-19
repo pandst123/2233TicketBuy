@@ -464,7 +464,7 @@ class BilibiliAPI:
         return screen.skus
     
     def prepare_token(self, project_id: int, screen_id: int, sku_id: int, count: int,
-                      buyer_info=None, id_bind: int = 0, viewers: list = None) -> Dict:
+                      buyer_info=None, id_bind: int = 0, viewers: list = None, is_hot: bool = False) -> Dict:
         """
         准备token（参考BHYG实现）
         """
@@ -473,13 +473,14 @@ class BilibiliAPI:
         # prepare 用原始 API buyer_info 值（BHYG 就是这样做的）
         buyer_info_data = buyer_info if buyer_info else ""
         
-        # 生成 ctoken（prepare 接口用，参考 BHYG）
+        # 生成 ctoken（prepare 接口用，仅 hot 项目）
         ctoken = ""
-        try:
-            from .cp2312 import get_ctoken
-            ctoken = get_ctoken(project_id, screen_id, sku_id, count)
-        except Exception as e:
-            logger.debug(f"ctoken 生成失败: {e}")
+        if is_hot:
+            try:
+                from .cp2312 import get_ctoken
+                ctoken = get_ctoken(project_id, screen_id, sku_id, count)
+            except Exception as e:
+                logger.debug(f"ctoken 生成失败: {e}")
         
         data = {
             "project_id": project_id,
@@ -556,7 +557,7 @@ class BilibiliAPI:
             logger.info(f"准备token: project={project_id}, screen={screen_id}, sku={sku_id}, count={count}")
             prepare_data = self.prepare_token(project_id, screen_id, sku_id, count,
                                                buyer_info=buyer_info, id_bind=id_bind,
-                                               viewers=viewers)
+                                               viewers=viewers, is_hot=is_hot)
             token = prepare_data.get("token", "") or ""
             ptoken = prepare_data.get("ptoken", "") or ""
 

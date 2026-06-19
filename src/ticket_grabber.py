@@ -633,6 +633,15 @@ class TicketGrabber:
         self.phase = GrabPhase.GRABBING
         logger.info("开始抢票...")
 
+        # 重新检测 hot 项目（B站可能在最后一刻修改标记）
+        try:
+            project = self.api.get_project_info(self.config.event.project_id)
+            self._is_hot = getattr(project, 'hot_project', False)
+            if self._is_hot:
+                logger.warning("检测到项目已变为 Hot，启用增强模式")
+        except Exception:
+            pass
+
         # 🔥 Hot 项目：记录启动参数
         if self._is_hot:
             logger.hot(f"=== Hot 模式启动 ===")
