@@ -1,15 +1,14 @@
 # Python
 __pycache__/
-# Build artifacts
-build/
-dist/
-__pycache__/
 *.py[cod]
 *.pyo
 *.egg-info/
-dist/
-build/
 *.egg
+
+# Build artifacts
+build/
+dist/
+*.spec
 
 # Virtual environments
 venv/

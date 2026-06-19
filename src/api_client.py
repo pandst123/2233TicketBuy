@@ -34,6 +34,7 @@ class ProjectInfo:
     buyer_info: str = ""
     id_bind: int = 0
     hot_project: bool = False
+    sale_flag_number: int = 0
 
 
 @dataclass
@@ -440,6 +441,7 @@ class BilibiliAPI:
             buyer_info=data.get("buyer_info", ""),
             id_bind=data.get("id_bind", 0),
             hot_project=data.get("hotProject", False),
+            sale_flag_number=data.get("sale_flag_number", 0),
         )
     
     def get_screen_info(self, project_id: int, screen_id: int) -> ScreenInfo:
@@ -615,8 +617,6 @@ class BilibiliAPI:
                 "personal_id": v.get("personal_id"),
                 "id_type": v.get("id_type", 0),
             } for v in viewers])
-            order_data["buyer"] = buyer_name
-            order_data["tel"] = buyer_tel
         
         # BHYG 风格：clickPosition + requestSource + newRisk
         # origin 应比 now 早 10-20 秒（模拟用户浏览耗时）

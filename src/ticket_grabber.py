@@ -86,6 +86,7 @@ class TicketGrabber:
         self._cached_pay_money = 0  # BHYG: 100034 自动更新价格
         self._is_hot = getattr(config.event, 'hot_project', False)
         self._delta = getattr(config.strategy, 'delta', 0.05)
+        self._raw_stock_status = 0  # 原始 stockStatus
         
         # 智能间隔（对齐 BHYG last_order_time / last_order_check_time）
         self.last_order_time = 0
@@ -210,6 +211,7 @@ class TicketGrabber:
             
             # stockStatus: 1=TEMP_SOLD_OUT, 2=SOLD_OUT, 3=HAS_STOCK
             stock_status = result.get("data", {}).get("stockStatus", 0)
+            self._raw_stock_status = stock_status
             if stock_status != 3:
                 logger.debug(f"stock/check stockStatus={stock_status} (无票)")
             return stock_status == 3
@@ -251,6 +253,7 @@ class TicketGrabber:
         logger.info(f"提前开始: {advance_ms}ms")
         
         _re_synced = False
+        _hot_checked = False
         
         while True:
             current_time = time.time()
@@ -260,21 +263,33 @@ class TicketGrabber:
                 logger.info("时间到！开始抢票...")
                 break
             
+            # 开售前10分钟静默检测热项目状态（仅一次，无输出，防止挂脚本早漏检）
+            if not _hot_checked and remaining <= 600:
+                _hot_checked = True
+                try:
+                    project = self.api.get_project_info(self.config.event.project_id)
+                    if project.hot_project:
+                        self._is_hot = True
+                except Exception:
+                    pass
+            
+            # 倒计时 ≤60s 时触发二次时间同步（仅一次）
+            if not _re_synced and remaining <= 60:
+                _re_synced = True
+                server_now = self.api.get_server_time()
+                new_offset = server_now - time.time()
+                drift = new_offset - time_offset
+                target_time -= drift
+                logger.time(f"二次时间同步: 漂移 {drift:+.2f}s, 总偏移 {new_offset:+.2f}s")
+            
             # 显示倒计时
             if remaining > 60:
                 hours = int(remaining // 3600)
                 minutes = int((remaining % 3600) // 60)
-                logger.time(f"倒计时: {hours}小时{minutes}分钟")
+                seconds = int(remaining % 60)
+                logger.time(f"倒计时: {hours}小时{minutes}分{seconds}秒")
                 time.sleep(60)
             elif remaining > 5:
-                # 倒计时 60s 时再次同步服务器时间
-                if not _re_synced:
-                    _re_synced = True
-                    server_now = self.api.get_server_time()
-                    new_offset = server_now - time.time()
-                    drift = new_offset - time_offset
-                    target_time -= drift
-                    logger.time(f"二次时间同步: 漂移 {drift:+.2f}s, 总偏移 {new_offset:+.2f}s")
                 logger.time(f"倒计时: {int(remaining)}秒")
                 time.sleep(1)
             else:
@@ -633,15 +648,6 @@ class TicketGrabber:
         self.phase = GrabPhase.GRABBING
         logger.info("开始抢票...")
 
-        # 重新检测 hot 项目（B站可能在最后一刻修改标记）
-        try:
-            project = self.api.get_project_info(self.config.event.project_id)
-            self._is_hot = getattr(project, 'hot_project', False)
-            if self._is_hot:
-                logger.warning("检测到项目已变为 Hot，启用增强模式")
-        except Exception:
-            pass
-
         # 🔥 Hot 项目：记录启动参数
         if self._is_hot:
             logger.hot(f"=== Hot 模式启动 ===")
@@ -655,37 +661,62 @@ class TicketGrabber:
         self._token_exp = 0
         
         attempt = 0
-        stock_check_count = 0
         enable_stock_check = getattr(self.config.strategy, 'enable_stock_check', True)
+        _monitor_log_interval = 10  # 每 N 次输出一次
+        _monitor_count = 0
+        _last_stock_status = None
+        _last_sale_flag = None
+        
+        # 开局查库存，售罄直接进监控（不发下单请求）
+        if enable_stock_check:
+            if not self.check_ticket_stock():
+                logger.info("无票，进入监控模式（不发送下单请求）")
+                self.phase = GrabPhase.MONITORING
         
         while not self._stop_event.is_set():
             attempt += 1
             
-            # 可选：BHYG 模式库存检查（默认关闭，避免额外延迟）
-            if enable_stock_check and stock_check_count == 0 and self._412_count < self.max_412_count:
-                if not self.check_ticket_stock():
-                    logger.debug(f"暂无库存，等待 {self.monitor_interval}s...")
-                    time.sleep(self.monitor_interval)
-                    continue
-                else:
-                    stock_check_count += 1
-            
-            if enable_stock_check:
-                stock_check_count += 1
-                if stock_check_count % 30 == 0:
-                    stock_check_count = 0
-            
-            # 根据阶段选择策略
+            # ===== 监控模式：轮询库存+sale_flag，不发下单 =====
             if self.phase == GrabPhase.MONITORING:
                 has_ticket = self.check_ticket_stock()
+                
+                try:
+                    project = self.api.get_project_info(self.config.event.project_id)
+                    sale_flag = getattr(project, 'sale_flag_number', None)
+                except Exception:
+                    sale_flag = None
+                
+                status_parts = []
+                if has_ticket != _last_stock_status:
+                    _last_stock_status = has_ticket
+                    status_parts.append(f"库存: {'有票' if has_ticket else '无票'}")
+                if sale_flag is not None and sale_flag != _last_sale_flag:
+                    _last_sale_flag = sale_flag
+                    flag_map = {0: "未开售", 1: "预售中", 2: "售卖中", 3: "已售罄", 4: "暂时售罄"}
+                    status_parts.append(f"sale_flag: {flag_map.get(sale_flag, sale_flag)}")
+                
+                # 显示具体售罄类型（已售罄 vs 暂时售罄）
+                if not has_ticket:
+                    raw_status = getattr(self, '_raw_stock_status', 0)
+                    stock_status_map = {1: "暂时售罄", 2: "已售罄"}
+                    stock_label = stock_status_map.get(raw_status, f"无票(status={raw_status})")
+                else:
+                    stock_label = ""
+                
+                _monitor_count += 1
+                if status_parts:
+                    logger.info(f"[监控] {' | '.join(status_parts)}")
+                elif _monitor_count % _monitor_log_interval == 0:
+                    logger.info(f"[监控] {stock_label}，已等待 {_monitor_count * self.monitor_interval:.0f}s")
+                
                 if has_ticket:
-                    logger.info("检测到有票，切回抢票模式")
+                    logger.info("[监控] 库存恢复，开始抢票")
                     self.phase = GrabPhase.GRABBING
                     self.grab_interval = 0.1
                     continue
-                else:
-                    time.sleep(self.monitor_interval)
-                    continue
+                
+                time.sleep(self.monitor_interval)
+                continue
             
             # 抢票模式
             t_start = time.time()
@@ -845,20 +876,25 @@ def _show_pay_qrcode(api, order_id: str, order_token: str):
 
 
 def _notify_success(order_id: str, buyer: str = ""):
-    """Windows 桌面通知 + 提示音"""
+    """Windows 声音通知 + 弹窗（弹窗不阻塞主流程）"""
+    import winsound
     try:
-        import winsound
         winsound.MessageBeep(winsound.MB_ICONASTERISK)
     except Exception:
         pass
-    try:
-        import ctypes
-        msg = f"订单ID: {order_id}\n请尽快完成支付！"
-        if buyer:
-            msg = f"购票人: {buyer}\n{msg}"
-        ctypes.windll.user32.MessageBoxW(0, msg, "2233TicketBuy - 抢票成功！", 0x40)
-    except Exception:
-        pass
+    # MessageBox 在线程中执行，避免阻塞抢票流程返回主菜单
+    def _show_msgbox():
+        try:
+            import ctypes
+            msg = f"订单ID: {order_id}\n请尽快完成支付！"
+            if buyer:
+                msg = f"购票人: {buyer}\n{msg}"
+            ctypes.windll.user32.MessageBoxW(0, msg, "2233TicketBuy - 抢票成功！", 0x40)
+        except Exception:
+            pass
+    import threading
+    t = threading.Thread(target=_show_msgbox, daemon=True)
+    t.start()
 
 
 def grab_ticket_interactive(config: Config, viewers: Optional[List[Dict]] = None) -> TicketResult:
