@@ -36,7 +36,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name='2233TicketBuy_v6.0.0',
+    name='2233TicketBuy_v6.1.0',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
