@@ -267,7 +267,7 @@ def select_event(config, api):
                     # 售罄/暂时售罄：允许选择，提示将进入监控模式
                     status_desc = get_ticket_status_desc(sku)
                     if "售罄" in status_desc:
-                        print(f"⚠ 该票档当前「{status_desc}」，将继续但进入监控模式等待回流")
+                        print(f"⚠ 该票档当前「{status_desc}」，如果开始抢票会进入监控模式等待回流")
                     break
                 else:
                     print("序号超出范围")
