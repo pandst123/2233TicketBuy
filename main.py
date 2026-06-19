@@ -264,11 +264,10 @@ def select_event(config, api):
                 sku_index = int(input("\n请选择票档（输入序号）: ")) - 1
                 if 0 <= sku_index < len(ticket_list):
                     sku = ticket_list[sku_index]
-                    # 检查票档状态
+                    # 售罄/暂时售罄：允许选择，提示将进入监控模式
                     status_desc = get_ticket_status_desc(sku)
-                    if "已售罄" in status_desc:
-                        print("该票档已售罄，请选择其他票档")
-                        continue
+                    if "售罄" in status_desc:
+                        print(f"⚠ 该票档当前「{status_desc}」，将继续但进入监控模式等待回流")
                     break
                 else:
                     print("序号超出范围")
