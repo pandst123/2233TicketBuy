@@ -27,11 +27,18 @@ jobs:
       - name: Build
         run: python -m PyInstaller --clean 2233TicketBuy.spec
       
+      - name: Rename (add platform suffix)
+        shell: pwsh
+        run: |
+          $f = Get-ChildItem dist/*.exe | Select-Object -First 1
+          $new = $f.BaseName + '_Windows' + $f.Extension
+          Rename-Item $f.FullName $new
+      
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: 2233TicketBuy_Windows
-          path: dist/2233TicketBuy_v*.exe
+          path: dist/2233TicketBuy_*_Windows.exe
 
   build-linux:
     runs-on: ubuntu-latest
@@ -50,11 +57,16 @@ jobs:
       - name: Build
         run: python -m PyInstaller --clean 2233TicketBuy.spec
       
+      - name: Rename (add platform suffix)
+        run: |
+          f=$(ls dist/2233TicketBuy_v* | head -1)
+          mv "$f" "${f}_Linux"
+      
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: 2233TicketBuy_Linux
-          path: dist/2233TicketBuy_v*
+          path: dist/2233TicketBuy_v*_Linux
 
   release:
     if: startsWith(github.ref, 'refs/tags/v')
