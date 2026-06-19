@@ -879,25 +879,32 @@ def _show_pay_qrcode(api, order_id: str, order_token: str):
 
 
 def _notify_success(order_id: str, buyer: str = ""):
-    """Windows 声音通知 + 弹窗（弹窗不阻塞主流程）"""
-    import winsound
+    """跨平台通知：Windows 声音+弹窗，Linux 终端响铃"""
+    import sys
+    # 声音通知
     try:
-        winsound.MessageBeep(winsound.MB_ICONASTERISK)
+        if sys.platform == 'win32':
+            import winsound
+            winsound.MessageBeep(winsound.MB_ICONASTERISK)
+        else:
+            # Linux/macOS: ASCII bell
+            print('\a', end='', flush=True)
     except Exception:
         pass
-    # MessageBox 在线程中执行，避免阻塞抢票流程返回主菜单
-    def _show_msgbox():
-        try:
-            import ctypes
-            msg = f"订单ID: {order_id}\n请尽快完成支付！"
-            if buyer:
-                msg = f"购票人: {buyer}\n{msg}"
-            ctypes.windll.user32.MessageBoxW(0, msg, "2233TicketBuy - 抢票成功！", 0x40)
-        except Exception:
-            pass
-    import threading
-    t = threading.Thread(target=_show_msgbox, daemon=True)
-    t.start()
+    # Windows MessageBox（非阻塞）
+    if sys.platform == 'win32':
+        def _show_msgbox():
+            try:
+                import ctypes
+                msg = f"订单ID: {order_id}\n请尽快完成支付！"
+                if buyer:
+                    msg = f"购票人: {buyer}\n{msg}"
+                ctypes.windll.user32.MessageBoxW(0, msg, "2233TicketBuy - 抢票成功！", 0x40)
+            except Exception:
+                pass
+        import threading
+        t = threading.Thread(target=_show_msgbox, daemon=True)
+        t.start()
 
 
 def grab_ticket_interactive(config: Config, viewers: Optional[List[Dict]] = None) -> TicketResult:
