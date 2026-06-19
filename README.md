@@ -1,18 +1,27 @@
 # 2233TicketBuy
 
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Python](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/)
+[![Python](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/)
+[![Build](https://github.com/Oecxuan/2233TicketBuy/actions/workflows/build.yml/badge.svg)](https://github.com/Oecxuan/2233TicketBuy/actions)
+[![Release](https://img.shields.io/github/v/release/Oecxuan/2233TicketBuy)](https://github.com/Oecxuan/2233TicketBuy/releases)
 
-B站会员购抢票工具，仅供技术学习和研究使用。
+B站会员购抢票工具，仅供学习参考和研究使用。
 
-纯本地运行软件，不涉及任何账号信息上传。
+本项目不开源任何账号信息，不上传任何数据。
 
-> **免责声明：请遵守相关法律法规及B站服务条款，自行承担使用风险。请勿将本项目用于任何商业牟利行为，亦严禁用于任何形式的代抢、违法行为或违反相关平台规则的用途。由此产生的一切后果均由使用者自行承担，与本人无关。**
+> **免责声明：请遵守当地法律法规及B站相关规定，自行承担使用风险。严禁将本项目用于任何商业盈利行为。严禁进行任何形式的倒卖或违规行为。违反平台规则和法律所造成的一切后果由使用者自行承担，与本项目无关。**
 
-## 致谢
+## 感谢
 
 - [biliTickerBuy](https://github.com/mikumifa/biliTickerBuy) 
-- [BHYG](https://github.com/ZianTT/BHYG)
+- [BHYG](https://github.com/ZianTT/BHYG) 
+
+## 功能
+
+- 扫码登录
+- 交互式选择项目
+- 双服务器时间同步
+- Windows 声音+弹窗（非阻塞）/ Linux 终端响铃 / QR 码
 
 ## 快速开始
 
@@ -21,15 +30,22 @@ pip install -r requirements.txt
 python main.py
 ```
 
-交互模式：登录 → 选活动 → 选购票人 → 抢票。配置文件会自动生成。
+交互模式：登录 → 选活动 → 选票档 → 抢票。配置文件自动生成。
 
-也可直接 `python main.py --grab`（需先完成过交互配置）。
+也可直接 `python main.py --grab`（需已配置完成）。
 
-## 打包
+## 下载
+
+前往 [Releases](https://github.com/Oecxuan/2233TicketBuy/releases) 下载对应平台版本：
+
+- `2233TicketBuy_v*_Windows.exe`
+- `2233TicketBuy_v*_Linux`
+
+## 构建
 
 ```bash
-build.bat
-# 或 python -m PyInstaller --clean 2233TicketBuy.spec
+pip install -r requirements.txt pyinstaller
+python -m PyInstaller --clean 2233TicketBuy.spec
 ```
 
 ## 许可证
@@ -39,7 +55,7 @@ MIT License
 ## 联系
 
 - [提交 Issue](../../issues)
-- 如本项目中存在侵犯 Bilibili 公司合法权益的内容，需下线本项目，请联系我或者提交 Issue。
+- 如本项目存在侵犯 Bilibili 公司合法权益的内容，请提交 Issue 联系删除。
 
 ## Star History
 
