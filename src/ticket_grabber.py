@@ -566,7 +566,7 @@ class TicketGrabber:
             time.sleep(1)
             return True
         
-        # === 429 限流（BHYG 风格：仅日志，不计数） ===
+        # === 429 限流（拥堵计数，连续触发降速） ===
         if errno == 429:
             logger.warning(f"第{self._attempt_count}次 | 429 请求过快，稍后重试")
             self._congestion_count = getattr(self, '_congestion_count', 0) + 1
@@ -578,7 +578,7 @@ class TicketGrabber:
         
         # === 库存相关（继续监控） ===
         if errno in (10007, 100001, 100009, 900001, 900002, 219):
-            if errno in (-999, -998, -997, -504, -503, -502, -429, 100001, 900001):
+            if errno in (100001, 900001):
                 self._congestion_count = getattr(self, '_congestion_count', 0) + 1
             return True
         
@@ -651,7 +651,7 @@ class TicketGrabber:
         
         # 未识别错误：兜底重试
         logger.debug(f"未识别的错误，继续重试: {message}")
-        if errno in (-999, -998, -997, -504, -503, -502, -429, 100001, 900001):
+        if errno in (100001, 900001):
             self._congestion_count = getattr(self, '_congestion_count', 0) + 1
         else:
             self._congestion_count = 0

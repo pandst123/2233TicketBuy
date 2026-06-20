@@ -672,7 +672,7 @@ class BilibiliAPI:
             result = response.json()
         except json.JSONDecodeError as e:
             # 返回非 JSON（空响应/HTML 错误页）
-            status = response.status_code if 'response' in dir() else 0
+            status = response.status_code
             errno_map = {429: -429, 502: -502, 503: -503, 504: -504}
             code = errno_map.get(status, -999)
             logger.warning(f"create_order 非JSON响应: HTTP {status}, code={code}")
