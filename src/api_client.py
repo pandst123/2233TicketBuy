@@ -468,13 +468,13 @@ class BilibiliAPI:
     def prepare_token(self, project_id: int, screen_id: int, sku_id: int, count: int,
                       buyer_info=None, id_bind: int = 0, viewers: list = None, is_hot: bool = False) -> Dict:
         """
-        准备token（参考BHYG实现）
+        准备token（BHYG 风格：while True 重试直到成功）
         """
         url = f"{self.BASE_URL}/ticket/order/prepare?project_id={project_id}"
-        
+
         # prepare 用原始 API buyer_info 值（BHYG 就是这样做的）
         buyer_info_data = buyer_info if buyer_info else ""
-        
+
         # 生成 ctoken（prepare 接口用，仅 hot 项目）
         ctoken = ""
         if is_hot:
@@ -483,7 +483,7 @@ class BilibiliAPI:
                 ctoken = get_ctoken(project_id, screen_id, sku_id, count)
             except Exception as e:
                 logger.debug(f"ctoken 生成失败: {e}")
-        
+
         data = {
             "project_id": project_id,
             "screen_id": screen_id,
@@ -498,37 +498,41 @@ class BilibiliAPI:
         }
         if ctoken:
             data["token"] = ctoken
-        
-        # prepare 接口直接请求，手动解析
-        body_data = json.dumps(data)
-        headers = self._get_headers("POST", url, body_data)
-        try:
-            client = self._get_client()
-            response = client.post(url, json=data, headers=headers, cookies=self.cookies)
-            result = response.json()
-        except Exception as e:
-            logger.warning(f"prepare_token 请求异常: {e}")
-            return {}
-        
-        errno = result.get("errno", -1)
-        if errno == 0:
-            data = result.get("data", {})
-            ga = data.get("ga_data", {})
-            shield = data.get("shield", {})
-            if shield.get("open"):
-                logger.warning(f"prepare_token shield 开启: {shield}")
-            if ga.get("decisions"):
-                logger.debug(f"ga decisions: {ga.get('decisions')}")
-            if ga.get("riskResult", 0) != 0:
-                logger.warning(f"ga riskResult={ga['riskResult']}")
-        if errno != 0:
-            logger.debug(f"prepare_token errno={errno}: {result.get('msg', '')}")
-        if errno == 0:
-            return result.get("data", {})
-        else:
-            logger.warning(f"prepare_token errno={errno}: {result.get('msg', '')}")
-            return result.get("data", {}) or {}
-    
+
+        # BHYG 风格：while True 重试直到成功
+        while True:
+            body_data = json.dumps(data)
+            headers = self._get_headers("POST", url, body_data)
+            try:
+                client = self._get_client()
+                response = client.post(url, json=data, headers=headers, cookies=self.cookies)
+                result = response.json()
+            except Exception as e:
+                logger.warning(f"prepare_token 请求异常: {e}")
+                time.sleep(1)
+                continue
+
+            errno = result.get("errno", -1)
+            if errno == 0:
+                resp_data = result.get("data", {})
+                ga = resp_data.get("ga_data", {})
+                shield = resp_data.get("shield", {})
+                if shield.get("open"):
+                    logger.warning(f"prepare_token shield 开启: {shield}")
+                if ga.get("decisions"):
+                    logger.debug(f"ga decisions: {ga.get('decisions')}")
+                return resp_data
+
+            # -401: gaia 风控，等待后重试
+            if errno == -401:
+                logger.warning("prepare_token 触发 gaia 风控，等待重试")
+                time.sleep(1)
+                continue
+
+            # 其他错误：等1秒重试
+            logger.warning(f"prepare_token 失败 (errno={errno}): {result.get('msg', result.get('message', ''))}")
+            time.sleep(1)
+
     def create_order(
         self,
         project_id: int,
@@ -543,19 +547,16 @@ class BilibiliAPI:
         cached_ptoken: str = "",
         is_hot: bool = False,
         cached_pay_money: int = 0,
+        id_bind: int = 0,
+        buyer_info: str = "",
     ) -> tuple:
         """创建订单（BHYG do_order_create 风格）"""
         url = f"{self.BASE_URL}/ticket/order/createV2?project_id={project_id}"
-        
-        project = self.get_project_info(project_id)
-        id_bind = project.id_bind
-        
         # 获取 token
         if cached_token:
             token = cached_token
             ptoken = cached_ptoken
         else:
-            buyer_info = project.buyer_info
             logger.info(f"准备token: project={project_id}, screen={screen_id}, sku={sku_id}, count={count}")
             prepare_data = self.prepare_token(project_id, screen_id, sku_id, count,
                                                buyer_info=buyer_info, id_bind=id_bind,
@@ -565,18 +566,10 @@ class BilibiliAPI:
 
         ptoken_clean = ptoken.replace("=", "") if ptoken else ""
         
-        # prepare 和 create 之间延迟
-        time.sleep(0.3)
+        # BHYG: prepare 和 create 之间无延迟
         
         # 获取价格（优先使用缓存价格，BHYG: 100034 自动更新）
         pay_money = cached_pay_money if cached_pay_money else 0
-        if not pay_money:
-            for screen in project.screens:
-                if screen["id"] == screen_id:
-                    for sku in screen.get("ticket_list", []):
-                        if sku["id"] == sku_id:
-                            pay_money = sku.get("price", 0)
-                            break
         
         # 构建订单数据（严格对齐 BHYG do_order_create 格式）
         now_ms = int(time.time() * 1000)
@@ -671,21 +664,17 @@ class BilibiliAPI:
             response = client.post(request_url, json=order_data, headers=headers, cookies=self.cookies)
             result = response.json()
         except json.JSONDecodeError as e:
-            # 返回非 JSON（空响应/HTML 错误页）
-            status = response.status_code
-            errno_map = {429: -429, 502: -502, 503: -503, 504: -504}
-            code = errno_map.get(status, -999)
-            logger.warning(f"create_order 非JSON响应: HTTP {status}, code={code}")
-            return {"errno": code, "msg": f"HTTP {status}: {e}", "data": {}}, token, ptoken_clean
+            logger.warning(f"create_order 非JSON响应: HTTP {response.status_code}")
+            return {"errno": -1, "msg": f"HTTP {response.status_code}", "data": {}}, token, ptoken_clean
         except httpx.TimeoutException:
             logger.warning(f"create_order 超时")
-            return {"errno": -998, "msg": "请求超时", "data": {}}, token, ptoken_clean
+            return {"errno": -1, "msg": "请求超时", "data": {}}, token, ptoken_clean
         except httpx.NetworkError as e:
             logger.warning(f"create_order 网络错误: {e}")
-            return {"errno": -997, "msg": str(e), "data": {}}, token, ptoken_clean
+            return {"errno": -1, "msg": str(e), "data": {}}, token, ptoken_clean
         except Exception as e:
             logger.warning(f"create_order 网络异常: {e}")
-            return {"errno": -999, "msg": str(e), "data": {}}, token, ptoken_clean
+            return {"errno": -1, "msg": str(e), "data": {}}, token, ptoken_clean
         
         errno = result.get("errno", result.get("code", -1))
         msg = result.get("msg", result.get("message", ""))

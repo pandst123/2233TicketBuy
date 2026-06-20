@@ -89,7 +89,6 @@ class TicketGrabber:
         self._delta = getattr(config.strategy, 'delta', 0.05)
         self._raw_stock_status = 0  # 原始 stockStatus
         self._congestion_count = 0  # 拥堵错误计数
-        self._stock_check_count = 0  # BHYG: 库存检查计数器（每30次下单重查库存）
         
         # 智能间隔（对齐 BHYG last_order_time / last_order_check_time）
         self.last_order_time = 0
@@ -400,23 +399,16 @@ class TicketGrabber:
 
     def _try_create_order(self) -> TicketResult:
         """尝试创建订单（单次）"""
-        new_token = None
-        new_ptoken = None
         
-        # 🔑 检查 token 过期
-        if self._cached_token and time.time() > self._token_exp - 60:
-            self._cached_token = None
-            self._cached_ptoken = None
-
-        # 🔥 Hot 项目：记录 token 状态（前5次）
+        # 🔥 Hot 项目：记录请求次数（前5次）
         if self._is_hot:
             attempt_no = getattr(self, '_attempt_count', 0)
             if attempt_no <= 5:
-                using_cached = bool(self._cached_token)
-                logger.hot(f"  token={'缓存' if using_cached else '刷新'}, 距过期={max(0, self._token_exp - time.time()):.0f}s")
+                logger.hot(f"  BHYG风格: 每次全新prepare token")
         
         try:
-            result, new_token, new_ptoken = self.api.create_order(
+            # BHYG 风格：每次下单全新 prepare token，不缓存
+            result, _, _ = self.api.create_order(
                 project_id=self.config.event.project_id,
                 screen_id=self.config.event.screen_id,
                 sku_id=self.config.event.sku_id,
@@ -425,10 +417,12 @@ class TicketGrabber:
                 buyer_tel=self.buyer_tel,
                 viewer_id=self.config.event.viewer_id if self.config.event.viewer_id else None,
                 viewers=self.viewers,
-                cached_token=self._cached_token or "",
-                cached_ptoken=self._cached_ptoken or "",
+                cached_token="",
+                cached_ptoken="",
                 is_hot=self._is_hot,
                 cached_pay_money=self._cached_pay_money,
+                id_bind=getattr(self, '_project_id_bind', 0),
+                buyer_info=getattr(self, '_project_buyer_info', ''),
             )
             
             errno = result.get("errno", result.get("code", -1))
@@ -458,9 +452,6 @@ class TicketGrabber:
                 logger.warning(f"触发 gaia 风控 (errno=-352): {msg}")
                 if self._try_gaia_verify(result):
                     logger.info("gaia 验证成功，立即重试")
-                    # 立即重试（不 sleep，递归调用消耗 cached token 直接重试）
-                    self._cached_token = new_token  # 更新缓存
-                    self._cached_ptoken = new_ptoken or ""
                     return TicketResult(
                         success=False,
                         message=f"gaia 验证通过, 需重试",
@@ -479,7 +470,7 @@ class TicketGrabber:
             else:
                 # errno=1 "请慢一点" → 冷却
                 if errno == 1:
-                    self.grab_interval = min(self.grab_interval * 1.5, 5.0)
+                    self.grab_interval = min(self.grab_interval * 1.5, 1.0)
                     time.sleep(5)
                 return TicketResult(
                     success=False,
@@ -495,11 +486,6 @@ class TicketGrabber:
                 message=str(e),
                 timestamp=time.time(),
             )
-        finally:
-            if new_token:
-                self._cached_token = new_token
-                self._cached_ptoken = new_ptoken or ""
-                self._token_exp = time.time() + 300
     
     def _handle_grab_result(self, result: TicketResult) -> bool:
         """处理抢票结果（BHYG 错误码策略）"""
@@ -552,14 +538,13 @@ class TicketGrabber:
         
         # === 限流/风控 ===
         if errno == 1:
-            # "请慢一点" → 已在 _try_create_order 中等待5秒，这里再增加间隔
-            self.grab_interval = min(self.grab_interval * 2, 5.0)
+            # "请慢一点" → 已在 _try_create_order 中等待5秒，这里限制膨胀
+            self.grab_interval = min(self.grab_interval * 2, 1.0)
             return True
         
         # === 412 限流（BHYG 风格：计数+冷却） ===
         if errno in (-412, 412):
             self._412_count += 1
-            self.last_order_time = time.time()
             logger.warning(f"第{self._attempt_count}次 | 412 限流 (x{self._412_count})")
             if self._412_count >= self.max_412_count:
                 logger.warning(f"412 次数过多({self._412_count})，等待 300s...")
@@ -651,8 +636,9 @@ class TicketGrabber:
             if "限购" in message:
                 return False
         
-        # 未识别错误：兜底重试
+        # 未识别错误：兜底重试（BHYG: 设 last_order_check_time 防止过快重试）
         logger.debug(f"未识别的错误，继续重试: {message}")
+        self.last_order_check_time = time.time()
         if errno in (100001, 900001):
             self._congestion_count = getattr(self, '_congestion_count', 0) + 1
         else:
@@ -671,41 +657,39 @@ class TicketGrabber:
             logger.hot(f"数量: {self.config.event.count}, 间隔: {self.grab_interval}s, advance: {self.config.strategy.advance_ms}ms")
             logger.hot(f"购票人: {self.buyer_name}")
 
-        # 强制刷新 token（对齐 BHYG: token_exp = 0）
+        # 强制刷新 token（对齐 BHYG: 每次下单全新 prepare）
         self._cached_token = None
         self._cached_ptoken = None
         self._token_exp = 0
         
         attempt = 0
         enable_stock_check = getattr(self.config.strategy, 'enable_stock_check', True)
-        _monitor_log_interval = 10  # 每 N 次输出一次
-        _monitor_count = 0
-        _last_stock_status = None
-        _last_sale_flag = None
-        
-        # BHYG: 不再开局查库存强制进监控，由 stock_check_count 机制自然处理
+        stock_check_count = 0  # BHYG: 控制库存检查频率
+        _no_stock_count = 0    # 无库存连续计数，用于周期性输出
         
         while not self._stop_event.is_set():
             attempt += 1
             
-            # ===== BHYG 风格：stock_check_count 精准控制库存检查频率 =====
-            # stock_check_count == 0 时查库存；发现库存后连续30次下单不查
-            if (self._stock_check_count == 0
-                    and self.config.strategy.enable_stock_check):
+            # BHYG 风格：stock_check_count 控制库存检查频率
+            # 无库存时每次查（continues 跳过累加，stock_check_count 始终为0）
+            # 有库存后连续30次下单不查库存，30次后重置再查
+            if stock_check_count == 0 and enable_stock_check:
                 if not self.check_ticket_stock():
-                    # 无库存：已售罄慢监控(5s)，暂时售罄不sleep紧循环
-                    if getattr(self, '_raw_stock_status', 0) == 2:
-                        time.sleep(5.0)
+                    _no_stock_count += 1
+                    if _no_stock_count % 100 == 1:
+                        logger.info(f"无库存，持续检查中... (第{attempt}次, stockStatus={self._raw_stock_status})")
                     continue
-                else:
-                    self._stock_check_count += 1
-                    time.sleep(getattr(self.config.strategy, 'stock_check_available_delay', 0))
+                if _no_stock_count > 0:
+                    logger.info(f"库存恢复 (第{attempt}次, 此前无库存{_no_stock_count}次)")
+                    _no_stock_count = 0
+                stock_check_count += 1
+                time.sleep(getattr(self.config.strategy, 'stock_check_available_delay', 0))
             
-            if self.config.strategy.enable_stock_check:
-                self._stock_check_count += 1
+            if enable_stock_check:
+                stock_check_count += 1
             
-            if self._stock_check_count % 30 == 0:
-                self._stock_check_count = 0
+            if stock_check_count % 30 == 0:
+                stock_check_count = 0
             
             # 抢票模式
             t_start = time.time()
@@ -743,12 +727,15 @@ class TicketGrabber:
             else:
                 sleep_time = self.grab_interval
             
-            # 持续拥堵：随机变速 0.3~1s，模拟真实用户
+            # 持续拥堵：阶梯变速，模拟人手点击节奏（最高0.8s）
             _cc = getattr(self, '_congestion_count', 0)
+            if _cc > 0:
+                sleep_time = random.uniform(0.3, 0.8)
             if _cc >= 3:
-                sleep_time = random.uniform(0.3, 1.0)
+                sleep_time = random.uniform(0.5, 0.8)
             
             time.sleep(sleep_time)
+            self._congestion_count = 0  # 间隔后重新计数拥堵
         
         return TicketResult(
             success=False,
@@ -811,6 +798,10 @@ class TicketGrabber:
             logger.info(f"项目: {project.name}")
             logger.info(f"开售: {sale_time_str}")
             logger.info(f"场次: {screen.name}  |  票档: {sku_desc}  |  ¥{sku_price} x {count}张  |  总价: ¥{total_price}")
+            
+            # 缓存项目信息，避免每次下单重复查询
+            self._project_id_bind = project.id_bind
+            self._project_buyer_info = project.buyer_info
         except Exception as e:
             return TicketResult(success=False, message=f"获取信息失败: {e}")
         

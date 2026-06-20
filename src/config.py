@@ -41,6 +41,8 @@ class StrategyConfig:
     after_sale_begin_delay: float = 0.2
     order_interval: float = 0.3
     delta: float = 0.05
+    enable_stock_check: bool = True
+    stock_check_available_delay: float = 0
 
 
 @dataclass
