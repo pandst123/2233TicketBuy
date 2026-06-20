@@ -730,8 +730,27 @@ class TicketGrabber:
                     self.grab_interval = 0.1
                     continue
                 
-                time.sleep(self.monitor_interval)
+                # BHYG 风格：无库存时不停顿，立刻再查；仅已售罄才慢监控
+                if getattr(self, '_raw_stock_status', 0) == 2:
+                    time.sleep(5.0)  # 已售罄慢监控
                 continue
+            
+            # BHYG 风格：每次 create_order 前都查库存
+            if enable_stock_check:
+                if not self.check_ticket_stock():
+                    # 无库存：不发下单，已售罄慢监控(5s)，其他不sleep紧循环
+                    if getattr(self, '_raw_stock_status', 0) == 2:
+                        time.sleep(5.0)
+                    continue
+                # 有票才发下单
+            elif self.phase == GrabPhase.MONITORING:
+                # enable_stock_check=False 时保留旧监控逻辑
+                has_ticket = self.check_ticket_stock()
+                if not has_ticket:
+                    time.sleep(self.monitor_interval)
+                    continue
+                self.phase = GrabPhase.GRABBING
+                self.grab_interval = 0.1
             
             # 抢票模式
             t_start = time.time()
