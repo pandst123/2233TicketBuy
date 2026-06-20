@@ -89,6 +89,7 @@ class TicketGrabber:
         self._delta = getattr(config.strategy, 'delta', 0.05)
         self._raw_stock_status = 0  # 原始 stockStatus
         self._congestion_count = 0  # 拥堵错误计数
+        self._stock_check_count = 0  # BHYG: 库存检查计数器（每30次下单重查库存）
         
         # 智能间隔（对齐 BHYG last_order_time / last_order_check_time）
         self.last_order_time = 0
@@ -682,75 +683,29 @@ class TicketGrabber:
         _last_stock_status = None
         _last_sale_flag = None
         
-        # 开局查库存，售罄直接进监控（不发下单请求）
-        if enable_stock_check:
-            if not self.check_ticket_stock():
-                logger.info("无票，进入监控模式（不发送下单请求）")
-                self.phase = GrabPhase.MONITORING
+        # BHYG: 不再开局查库存强制进监控，由 stock_check_count 机制自然处理
         
         while not self._stop_event.is_set():
             attempt += 1
             
-            # ===== 监控模式：轮询库存+sale_flag，不发下单 =====
-            if self.phase == GrabPhase.MONITORING:
-                has_ticket = self.check_ticket_stock()
-                
-                try:
-                    project = self.api.get_project_info(self.config.event.project_id)
-                    sale_flag = getattr(project, 'sale_flag_number', None)
-                except Exception:
-                    sale_flag = None
-                
-                status_parts = []
-                if has_ticket != _last_stock_status:
-                    _last_stock_status = has_ticket
-                    status_parts.append(f"库存: {'有票' if has_ticket else '无票'}")
-                if sale_flag is not None and sale_flag != _last_sale_flag:
-                    _last_sale_flag = sale_flag
-                    flag_map = {0: "未开售", 1: "预售中", 2: "售卖中", 3: "已售罄", 4: "暂时售罄"}
-                    status_parts.append(f"sale_flag: {flag_map.get(sale_flag, sale_flag)}")
-                
-                # 显示具体售罄类型（已售罄 vs 暂时售罄）
-                if not has_ticket:
-                    raw_status = getattr(self, '_raw_stock_status', 0)
-                    stock_status_map = {1: "暂时售罄", 2: "已售罄"}
-                    stock_label = stock_status_map.get(raw_status, f"无票(status={raw_status})")
-                else:
-                    stock_label = ""
-                
-                _monitor_count += 1
-                if status_parts:
-                    logger.info(f"[监控] {' | '.join(status_parts)}")
-                elif _monitor_count % _monitor_log_interval == 0:
-                    logger.info(f"[监控] {stock_label}，已等待 {_monitor_count * self.monitor_interval:.0f}s")
-                
-                if has_ticket:
-                    logger.info("[监控] 库存恢复，开始抢票")
-                    self.phase = GrabPhase.GRABBING
-                    self.grab_interval = 0.1
-                    continue
-                
-                # BHYG 风格：无库存时不停顿，立刻再查；仅已售罄才慢监控
-                if getattr(self, '_raw_stock_status', 0) == 2:
-                    time.sleep(5.0)  # 已售罄慢监控
-                continue
-            
-            # BHYG 风格：每次 create_order 前都查库存
-            if enable_stock_check:
+            # ===== BHYG 风格：stock_check_count 精准控制库存检查频率 =====
+            # stock_check_count == 0 时查库存；发现库存后连续30次下单不查
+            if (self._stock_check_count == 0
+                    and self.config.strategy.enable_stock_check):
                 if not self.check_ticket_stock():
-                    # 无库存：不发下单，已售罄慢监控(5s)，其他不sleep紧循环
+                    # 无库存：已售罄慢监控(5s)，暂时售罄不sleep紧循环
                     if getattr(self, '_raw_stock_status', 0) == 2:
                         time.sleep(5.0)
                     continue
-                # 有票才发下单
-            elif self.phase == GrabPhase.MONITORING:
-                # enable_stock_check=False 时保留旧监控逻辑
-                has_ticket = self.check_ticket_stock()
-                if not has_ticket:
-                    time.sleep(self.monitor_interval)
-                    continue
-                self.phase = GrabPhase.GRABBING
-                self.grab_interval = 0.1
+                else:
+                    self._stock_check_count += 1
+                    time.sleep(getattr(self.config.strategy, 'stock_check_available_delay', 0))
+            
+            if self.config.strategy.enable_stock_check:
+                self._stock_check_count += 1
+            
+            if self._stock_check_count % 30 == 0:
+                self._stock_check_count = 0
             
             # 抢票模式
             t_start = time.time()
